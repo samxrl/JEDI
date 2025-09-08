@@ -1,3 +1,19 @@
-/.idea
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 
-!/.idea/.gitignore
+# Env
+.env
+.venv
+
+# Data
+data/raw/*
+data/processed/*
+
+# Artifacts
+artifacts/*
+
+/.idea/
+
+PROJECT_STRUCTURE.md
