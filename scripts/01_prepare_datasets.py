@@ -10,9 +10,9 @@
 3.  为每个越狱提示，生成两种类型的对话样本：
     - A1 (满足型): 用户提示 + 模型满足的前缀。
     - A2 (拒绝型): 用户提示 + 模型拒绝的前缀。
-4.  将生成的对话样本以结构化的 JSONL 格式保存到处理后的数据目录中。
-    - 每个样本包含原始提示、所用前缀、类别以及符合模型输入的对话结构。
-5.  （可选）处理良性（benign）数据集，将其转换为统一的对话格式。
+4.  将生成的对话样本以结构化的 CSV 格式保存到处理后的数据目录中。
+    - 每个样本包含原始提示、所用前缀、类别以及符合模型输入的对话结构（对话结构将作为JSON字符串存储）。
+5.  （可选）处理良性（benign）数据集，将其转换为统一的对话格式并存为 CSV。
 
 如何运行:
 python scripts/01_prepare_datasets.py --config configs/data_prep_config.yaml
@@ -20,6 +20,7 @@ python scripts/01_prepare_datasets.py --config configs/data_prep_config.yaml
 
 import json
 import argparse
+import csv
 from pathlib import Path
 import yaml
 from tqdm import tqdm
@@ -93,8 +94,8 @@ def process_dataset(config: dict):
         jb_config = config['jailbreak_dataset']
         input_path = base_dir / jb_config['input_file']
 
-        compliance_output_path = output_dir / "jailbreak_compliance.jsonl"
-        refusal_output_path = output_dir / "jailbreak_refusal.jsonl"
+        compliance_output_path = output_dir / f"{config['llm_name']}_jailbreak_compliance.csv"
+        refusal_output_path = output_dir / f"{config['llm_name']}_jailbreak_refusal.csv"
 
         # --- 加载前缀列表 ---
         prefixes_config = config.get('prefixes', {})
@@ -140,14 +141,22 @@ def process_dataset(config: dict):
             print(f"ERROR: 输入文件未找到: {input_path.resolve()}")
             return
         except (json.JSONDecodeError, KeyError) as e:
-            print(f"ERROR: 解析文件 {input_path.resolve()} 时出错: {e}. 请确保文件是有效的 JSONL 格式，且每行都有 'prompt' 键。")
+            print(f"ERROR: 解析文件 {input_path.resolve()} 时出错: {e}. 请确保文件是有效的 JSON 格式，且'records'列表下每项都有 'prompt' 键。")
             return
 
         print(f"从 {input_path.resolve()} 加载了 {len(prompts)} 条越狱提示。")
         print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
 
-        with open(compliance_output_path, 'w', encoding='utf-8') as f_comply, \
-                open(refusal_output_path, 'w', encoding='utf-8') as f_refuse:
+        with open(compliance_output_path, 'w', encoding='utf-8', newline='') as f_comply, \
+             open(refusal_output_path, 'w', encoding='utf-8', newline='') as f_refuse:
+
+            comply_writer = csv.writer(f_comply)
+            refuse_writer = csv.writer(f_refuse)
+
+            # 写入CSV标题行
+            header = ["prompt", "prefix", "category", "conversation"]
+            comply_writer.writerow(header)
+            refuse_writer.writerow(header)
 
             for prompt in tqdm(prompts, desc="处理越狱提示中"):
                 compliance_samples, refusal_samples = create_paired_samples(
@@ -156,9 +165,14 @@ def process_dataset(config: dict):
                     refusal_prefixes
                 )
                 for sample in compliance_samples:
-                    f_comply.write(json.dumps(sample, ensure_ascii=False) + '\n')
+                    # 将 conversation 字段序列化为 JSON 字符串
+                    conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                    comply_writer.writerow(row)
                 for sample in refusal_samples:
-                    f_refuse.write(json.dumps(sample, ensure_ascii=False) + '\n')
+                    conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                    refuse_writer.writerow(row)
 
         print(f"成功将满足型 (A1) 样本写入: {compliance_output_path.resolve()}")
         print(f"成功将拒绝型 (A2) 样本写入: {refusal_output_path.resolve()}")
@@ -168,11 +182,16 @@ def process_dataset(config: dict):
         print("开始处理良性数据集...")
         benign_config = config['benign_dataset']
         input_path = base_dir / benign_config['input_file']
-        output_path = output_dir / "benign_prompts.jsonl"
+        output_path = output_dir / "benign_prompts.csv"
 
         try:
             with open(input_path, 'r', encoding='utf-8') as f_in, \
-                    open(output_path, 'w', encoding='utf-8') as f_out:
+                 open(output_path, 'w', encoding='utf-8', newline='') as f_out:
+
+                writer = csv.writer(f_out)
+                # 写入CSV标题行
+                header = ["prompt", "category", "conversation"]
+                writer.writerow(header)
 
                 lines = [line for line in f_in if line.strip()]
                 print(f"从 {input_path.resolve()} 加载了 {len(lines)} 条良性提示。")
@@ -182,8 +201,10 @@ def process_dataset(config: dict):
                     if prompt:
                         # 良性数据通常只有用户提问，没有预设的助手回答
                         conversation = [{"role": "user", "content": prompt}]
-                        sample = {"prompt": prompt, "category": "benign", "conversation": conversation}
-                        f_out.write(json.dumps(sample, ensure_ascii=False) + '\n')
+                        # 将 conversation 序列化为 JSON 字符串
+                        conversation_str = json.dumps(conversation, ensure_ascii=False)
+                        row = [prompt, "benign", conversation_str]
+                        writer.writerow(row)
 
             print(f"成功将良性样本写入: {output_path.resolve()}")
         except FileNotFoundError:
@@ -225,4 +246,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
