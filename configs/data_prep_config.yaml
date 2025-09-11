@@ -1,0 +1,30 @@
+# SARC/configs/data_prep_config.yaml
+#
+# 用于 01_prepare_datasets.py 脚本的配置文件。
+# 请根据你的实际文件路径和需求进行修改。
+# 所有路径都是相对于项目根目录 (SARC/) 的。
+
+# 指定处理后文件的输出目录
+output_dir: data/processed
+
+# 越狱数据集配置
+jailbreak_dataset:
+  # 相对于项目根目录的输入文件路径
+  input_file: data/raw/vicuna_7b_v1_5_sampled_jailbreaks.json
+
+# 良性数据集配置 (可选)
+benign_dataset:
+  input_file: None
+
+# 用于生成 A1 和 A2 样本的前缀列表
+prefixes:
+  # 指定前缀的来源文件。这使得前缀列表更易于管理和扩展。
+  # 来源: https://github.com/IBM/activation-steering/blob/main/docs/demo-data/behavior_refusal.json
+  source_file: data/raw/behavior_refusal.json
+
+  # 'source_file' 中用于满足型(A1)前缀的 JSON 键
+  compliance_key: "compliant_responses"
+
+  # 'source_file' 中用于拒绝型(A2)前缀的 JSON 键
+  refusal_key: "non_compliant_responses"
+
