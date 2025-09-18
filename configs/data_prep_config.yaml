@@ -17,7 +17,10 @@ jailbreak_dataset:
 
 # 良性数据集配置 (可选)
 benign_dataset:
-  input_file: null
+  sample_size: 100  # 从良性数据集中采样的样本数量
+  input_files:
+    - data/raw/or-bench-80k.csv
+    - data/raw/benign-behaviors.csv
 
 # 用于生成 A1 和 A2 样本的前缀列表
 prefixes:

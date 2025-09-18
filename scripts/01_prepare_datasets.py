@@ -24,6 +24,8 @@ import csv
 from pathlib import Path
 import yaml
 from tqdm import tqdm
+import pandas as pd
+import random
 
 
 def create_paired_samples(prompt: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
@@ -148,7 +150,7 @@ def process_dataset(config: dict):
         print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
 
         with open(compliance_output_path, 'w', encoding='utf-8', newline='') as f_comply, \
-             open(refusal_output_path, 'w', encoding='utf-8', newline='') as f_refuse:
+                open(refusal_output_path, 'w', encoding='utf-8', newline='') as f_refuse:
 
             comply_writer = csv.writer(f_comply)
             refuse_writer = csv.writer(f_refuse)
@@ -178,39 +180,63 @@ def process_dataset(config: dict):
         print(f"成功将拒绝型 (A2) 样本写入: {refusal_output_path.resolve()}")
 
     # --- 处理良性数据集 ---
-    if 'benign_dataset' in config and config['benign_dataset'].get('input_file') is not None:
+    if 'benign_dataset' in config and config['benign_dataset'].get('input_files') is not None:
         print("开始处理良性数据集...")
         benign_config = config['benign_dataset']
-        input_path = base_dir / benign_config['input_file']
+        input_files = benign_config['input_files']
+        sample_size = benign_config.get('sample_size', 100)
         output_path = output_dir / "benign_prompts.csv"
 
-        try:
-            with open(input_path, 'r', encoding='utf-8') as f_in, \
-                 open(output_path, 'w', encoding='utf-8', newline='') as f_out:
+        all_samples = []
 
-                writer = csv.writer(f_out)
-                # 写入CSV标题行
-                header = ["prompt", "category", "conversation"]
-                writer.writerow(header)
+        for file_info in input_files:
+            file_path = base_dir / Path(file_info)
 
-                lines = [line for line in f_in if line.strip()]
-                print(f"从 {input_path.resolve()} 加载了 {len(lines)} 条良性提示。")
+            prompt_column = 'prompt'
+            try:
+                df = pd.read_csv(file_path)
+                # Handle potential variations in column names like 'Goal' or 'prompt'
+                if prompt_column not in df.columns:
+                    print(f"警告: 在 {file_path} 中未找到指定的列 '{prompt_column}'。将尝试使用'Goal'。")
+                    if 'Goal' in df.columns:
+                        prompt_column = 'Goal'
+                    else:
+                        raise ValueError(f"在 {file_path} 中找不到合适的提示列。")
 
-                for line in tqdm(lines, desc="处理良性提示中"):
-                    prompt = json.loads(line).get('prompt', '')
-                    if prompt:
-                        # 良性数据通常只有用户提问，没有预设的助手回答
-                        conversation = [{"role": "user", "content": prompt}]
-                        # 将 conversation 序列化为 JSON 字符串
-                        conversation_str = json.dumps(conversation, ensure_ascii=False)
-                        row = [prompt, "benign", conversation_str]
-                        writer.writerow(row)
+                num_rows = len(df)
+                if num_rows > 0:
+                    actual_sample_size = min(sample_size, num_rows)
+                    sampled_df = df.sample(n=actual_sample_size, random_state=42)
 
-            print(f"成功将良性样本写入: {output_path.resolve()}")
-        except FileNotFoundError:
-            print(f"ERROR: 输入文件未找到: {input_path.resolve()}")
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"ERROR: 解析文件 {input_path.resolve()} 时出错: {e}. 请确保格式正确。")
+                    for _, row in sampled_df.iterrows():
+                        prompt = row[prompt_column]
+                        if pd.notna(prompt):
+                            conversation = [{"role": "user", "content": str(prompt)}]
+                            conversation_str = json.dumps(conversation, ensure_ascii=False)
+                            all_samples.append({
+                                "prompt": str(prompt),
+                                "conversation": conversation_str,
+                                "source": Path(file_path).name
+                            })
+                    print(f"从 {file_path.resolve()} 成功采样 {actual_sample_size} 条良性提示。")
+            except FileNotFoundError:
+                print(f"ERROR: 输入文件未找到: {file_path.resolve()}")
+            except Exception as e:
+                print(f"ERROR: 处理文件 {file_path.resolve()} 时出错: {e}")
+
+        if all_samples:
+            # 随机打乱所有样本
+            random.shuffle(all_samples)
+
+            try:
+                with open(output_path, 'w', encoding='utf-8', newline='') as f_out:
+                    header = ["prompt", "conversation", "source"]
+                    writer = csv.DictWriter(f_out, fieldnames=header)
+                    writer.writeheader()
+                    writer.writerows(all_samples)
+                print(f"成功将 {len(all_samples)} 条良性样本写入: {output_path.resolve()}")
+            except IOError as e:
+                print(f"ERROR: 写入文件 {output_path.resolve()} 时出错: {e}")
 
 
 def main():
