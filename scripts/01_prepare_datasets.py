@@ -251,7 +251,7 @@ def main():
         '--config',
         type=str,
         default='../configs/data_prep_config.yaml',
-        help='指定数据准备阶段的 YAML 配置文件路径。\n默认: configs/data_prep_config.yaml'
+        help='指定数据准备阶段的 YAML 配置文件路径。\n默认: ../configs/data_prep_config.yaml'
     )
     args = parser.parse_args()
 
