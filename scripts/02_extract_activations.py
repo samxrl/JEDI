@@ -6,12 +6,10 @@
 
 主要功能:
 1.  加载由 `01_prepare_datasets.py` 生成的结构化数据集（满足、拒绝和良性样本）。
-2.  按 'prompt' 对数据进行分组。对于每个组：
-    a. 仅计算一次共享提示的输入嵌入（Input Embeddings）并缓存。
-    b. 将此缓存重用于该组内所有后续批次，以最大化效率，显著减少计算开销。
-3.  加载指定的预训练语言模型（例如，Vicuna, LLaMA）。
+2.  按 'prompt' 对数据进行分组，确保每个批次内的样本共享相同的前序提示以优化性能。
+3.  对于每个批次，从头构建完整的对话模板并将其输入模型。
 4.  根据“早期窗口”(W_early, 对应于前缀) 和“内容窗口” (W_cont, 对应于新生成的内容) 对隐藏状态进行切片和聚合。
-5.  将聚合后的激活张量保存到文件。
+5.  将聚合后的激活张量保存到文件，同时将模型的自然语言输出保存到单独的 CSV 文件。
 
 如何运行:
 python scripts/02_extract_activations.py --config configs/extraction_config.yaml
@@ -25,6 +23,7 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+import gc
 
 # 配置基本日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -85,146 +84,107 @@ def aggregate_activations(activations: torch.Tensor, method: str) -> torch.Tenso
 
 
 def process_batch(
-        batch_df, model, tokenizer, generation_config, extraction_config, device,
-        prompt_embeds=None, prompt_len=0
+        batch_df, model, tokenizer, generation_config, extraction_config, device
 ):
     """
-    处理一个批次的数据以提取激活，可以选择性地重用一个预先计算好的提示嵌入。
-
-    Args:
-        batch_df (pd.DataFrame): 包含当前批次数据的 DataFrame。
-        model: 已加载的语言模型。
-        tokenizer: 已加载的分词器。
-        generation_config (dict): 生成参数配置。
-        extraction_config (dict): 激活提取配置。
-        device (str): 计算设备。
-        prompt_embeds (torch.Tensor, optional): 预计算的提示嵌入。默认为 None。
-        prompt_len (int, optional): 提示的 token 长度。默认为 0。
-
-    Returns:
-        dict: 包含提取出的激活的字典。
+    处理一个批次的数据以提取激活。
+    此版本采用最稳健的两步法，避免 KV 缓存传递的复杂性：
+    1. 使用 model.generate() 获取完整的输出 token 序列。
+    2. 对完整的序列进行一次 model() 前向传播，以可靠地获取所有隐藏状态。
     """
     current_batch_size = len(batch_df)
-    final_assistant_texts = []  # 用于存储处理后的、纯净的助手回合文本
+    conversations = [json.loads(conv_str) for conv_str in batch_df['conversation']]
 
-    if prompt_embeds is not None:
-        # --- 路径 A: 重用缓存的提示嵌入 ---
-        # 这种方式可以避免对每个样本中相同的 prompt 部分进行重复的嵌入计算。
-        prefixes = batch_df['prefix'].tolist()
+    # 检查批次中的数据类型 (benign vs jailbreak)
+    is_benign_batch = 'prefix' not in batch_df.columns
 
-        # 使用“虚拟用户回合”技巧来精确地剥离出助手回合的模板部分。
-        # 这样可以避免 `apply_chat_template` 自动添加多余的系统提示或BOS token。
-        dummy_user_turn = [{"role": "user", "content": "DUMMY"}]
-        templated_dummy_user_turn = tokenizer.apply_chat_template(dummy_user_turn, tokenize=False, add_generation_prompt=False)
-
-        for p in prefixes:
-            full_turn = dummy_user_turn + [{"role": "assistant", "content": p}]
-            templated_full_turn = tokenizer.apply_chat_template(full_turn, tokenize=False, add_generation_prompt=False)
-            assistant_text = templated_full_turn.removeprefix(templated_dummy_user_turn)
-            # 移除可能由模板添加的结束符，确保我们只处理前缀本身
-            if tokenizer.eos_token and assistant_text.endswith(tokenizer.eos_token):
-                assistant_text = assistant_text.removesuffix(tokenizer.eos_token)
-            final_assistant_texts.append(assistant_text)
-
-        # 对处理后的纯净前缀文本进行分词
-        prefix_inputs = tokenizer(final_assistant_texts, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
-
-        if prefix_inputs.input_ids.shape[1] == 0:
-            logging.warning("处理后的前缀输入为空，跳过此批次。")
-            return {layer: {'early_window': [], 'content_window': []} for layer in extraction_config['layers']}
-
-        # 获取前缀的词嵌入
-        with torch.no_grad():
-            prefix_embeds = model.get_input_embeddings()(prefix_inputs.input_ids)
-
-        # 将缓存的提示嵌入扩展到当前批次大小，并与前缀嵌入拼接
-        expanded_prompt_embeds = prompt_embeds.expand(current_batch_size, -1, -1)
-        combined_embeds = torch.cat([expanded_prompt_embeds, prefix_embeds], dim=1)
-
-        # 创建对应的注意力掩码
-        prompt_attention_mask = torch.ones(current_batch_size, prompt_len, device=device, dtype=torch.long)
-        combined_attention_mask = torch.cat([prompt_attention_mask, prefix_inputs.attention_mask], dim=1)
-
-        # 准备传递给 model.generate 的参数字典
-        generate_args = {
-            "inputs_embeds": combined_embeds,
-            "attention_mask": combined_attention_mask,
-        }
-
+    if is_benign_batch:
+        # 对于良性数据，直接使用标准模板让模型自由生成
+        full_input_texts = tokenizer.apply_chat_template(conversations, tokenize=False, add_generation_prompt=True)
     else:
-        # --- 路径 B: 无缓存 ---
-        # 用于处理良性样本，或每个提示组的第一个批次。
-        conversations = [json.loads(conv_str) for conv_str in batch_df['conversation']]
-        templated_inputs = tokenizer.apply_chat_template(conversations, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(templated_inputs, return_tensors="pt", padding=True, truncation=True).to(device)
-        generate_args = inputs
+        # --- 手动构建输入，确保前缀后无结束标记 ---
+        user_turn = [conversations[0][0]]
+        prompt_part_str = tokenizer.apply_chat_template(user_turn, tokenize=False, add_generation_prompt=True)
+        prefixes = [conv[1]['content'] for conv in conversations]
+        full_input_texts = [prompt_part_str + p for p in prefixes]
 
-    # 使用 model.generate 一次性完成生成和隐藏状态的提取
+    # 对最终的文本输入进行分词
+    inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
+    prompt_len = inputs['input_ids'].shape[1]
+
     with torch.no_grad():
-        outputs = model.generate(
-            **generate_args,
+        # --- 步骤 1: 生成完整的 token 序列 ---
+        generated_sequences = model.generate(
+            **inputs,
             max_new_tokens=generation_config['max_new_tokens'],
             pad_token_id=tokenizer.pad_token_id,
-            do_sample=False,
-            output_hidden_states=True,
-            return_dict_in_generate=True
+            do_sample=False
         )
 
-    # `prompt_hidden_states` 包含了输入部分（提示+前缀）在所有层的隐藏状态
-    early_window_hidden_states = outputs.prompt_hidden_states
-    # `hidden_states` 包含了新生成部分在所有层的隐藏状态
-    generated_hidden_states_raw = outputs.hidden_states
+        # 只解码新生成的部分，并根据需要拼接前缀
+        generated_tokens_only = generated_sequences[:, prompt_len:]
+        decoded_new_parts = tokenizer.batch_decode(generated_tokens_only, skip_special_tokens=True)
 
-    # --- 通用的激活提取逻辑 ---
+        assistant_outputs = []
+        if is_benign_batch:
+            # 对于良性样本，输出就是新生成的内容
+            assistant_outputs = decoded_new_parts
+        else:
+            # 对于越狱样本，输出是 "前缀 + 新生成的内容"
+            prefixes = [conv[1]['content'] for conv in conversations]
+            for i in range(current_batch_size):
+                assistant_outputs.append(prefixes[i] + decoded_new_parts[i])
 
-    # 将生成步骤中分散的隐藏状态堆叠起来，方便后续处理
-    if generated_hidden_states_raw:
-        num_gen_steps = len(generated_hidden_states_raw)
-        num_layers = len(generated_hidden_states_raw[0])
-        generated_hidden_states_stacked = [
-            torch.cat([generated_hidden_states_raw[t][l] for t in range(num_gen_steps)], dim=1)
-            for l in range(num_layers)
-        ]
-    else:
-        generated_hidden_states_stacked = None
+        # --- 步骤 2: 对完整序列进行一次前向传播，以获取所有隐藏状态 ---
+        # 这种方法结构统一，可以可靠地处理所有情况
+        full_outputs = model(generated_sequences, output_hidden_states=True)
+        # 立即将所有隐藏状态移至 CPU 以释放显存
+        all_hidden_states = [h.cpu() for h in full_outputs.hidden_states]
 
     batch_activations = {layer: {'early_window': [], 'content_window': []} for layer in extraction_config['layers']}
-    prefixes = batch_df['prefix'].tolist() if 'prefix' in batch_df.columns else [None] * len(batch_df)
 
-    # 逐个样本处理，精确切分出早期窗口和内容窗口的激活
-    for i in range(current_batch_size):
-        prefix_text = prefixes[i]
+    # --- 提取激活 ---
+    # `all_hidden_states` 是一个元组，每个元素对应一层，形状为 [batch, seq, hidden]
+    for layer_idx in extraction_config['layers']:
+        layer_hidden_states = all_hidden_states[layer_idx]
 
-        # 根据是否使用缓存，计算前缀的 token 长度和起始索引
-        if prompt_embeds is not None:  # 缓存路径
-            prefix_input_ids = tokenizer(final_assistant_texts[i], add_special_tokens=False)['input_ids']
-            prefix_len = len(prefix_input_ids)
-            prefix_start_idx = prompt_len  # 前缀紧跟在提示后面
-        else:  # 非缓存路径
-            prefix_len = len(tokenizer.encode(prefix_text, add_special_tokens=False)) if prefix_text else 0
-            hs_len = early_window_hidden_states[0][i].shape[0] if early_window_hidden_states else 0
-            prefix_start_idx = hs_len - prefix_len  # 前缀是输入部分的最后几个 token
+        # 提取内容窗口 (W_cont) 的激活
+        # 内容窗口是提示之后的所有部分
+        content_window_states = layer_hidden_states[:, prompt_len:, :]
+        if content_window_states.shape[1] > 0:
+            agg_content = aggregate_activations(content_window_states, extraction_config['aggregation'])
+            # 结果需要按样本拆分
+            for i in range(current_batch_size):
+                # 此处的 .cpu() 现在是多余的，但无害
+                batch_activations[layer_idx]['content_window'].append(agg_content[i].unsqueeze(0).cpu())
 
-        # 遍历需要提取的层
-        for layer_idx in extraction_config['layers']:
-            # 提取早期窗口 (W_early) 的激活
-            if prefix_len > 0 and early_window_hidden_states:
-                hs_sample = early_window_hidden_states[layer_idx][i]
-                if prefix_start_idx >= 0:
-                    prefix_end_idx = prefix_start_idx + prefix_len
-                    early_window_states = hs_sample[prefix_start_idx:prefix_end_idx].unsqueeze(0)
-                    agg_early = aggregate_activations(early_window_states, extraction_config['aggregation'])
+        if is_benign_batch:
+            continue
+
+        # 提取早期窗口 (W_early) 的激活
+        for i in range(current_batch_size):
+            # --- 精确定位前缀起始位置的鲁棒方法 ---
+            user_turn = [conversations[i][0]]
+            templated_user_part = tokenizer.apply_chat_template(user_turn, tokenize=False, add_generation_prompt=True)
+            user_part_tokens = tokenizer(templated_user_part, add_special_tokens=False)['input_ids']
+            prefix_start_idx = len(user_part_tokens)
+
+            prefix_text = conversations[i][1]['content']
+            prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+            prefix_len = len(prefix_ids)
+
+            if prefix_len > 0:
+                prefix_end_idx = prefix_start_idx + prefix_len
+                if prefix_start_idx < prefix_end_idx and prefix_end_idx <= prompt_len:
+                    # 从当前样本的层隐藏状态中切片
+                    early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
+                    agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
+                    # 此处的 .cpu() 现在是多余的，但无害
                     batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
+                else:
+                    logging.warning(f"样本 {i} 的前缀索引 [{prefix_start_idx}:{prefix_end_idx}] 超出提示长度 {prompt_len}。可能由截断引起。")
 
-            # 提取内容窗口 (W_cont) 的激活
-            if generated_hidden_states_stacked:
-                gen_hs_sample = generated_hidden_states_stacked[layer_idx][i]
-                content_window_states = gen_hs_sample.unsqueeze(0)
-                if content_window_states.shape[1] > 0:
-                    agg_content = aggregate_activations(content_window_states, extraction_config['aggregation'])
-                    batch_activations[layer_idx]['content_window'].append(agg_content.cpu())
-
-    return batch_activations
+    return batch_activations, assistant_outputs
 
 
 def main():
@@ -265,57 +225,64 @@ def main():
     config['extraction']['layers'] = valid_layers
     logging.info(f"将从以下层提取激活: {valid_layers}")
 
+    # 从配置中获取 sample_size
+    sample_size = config.get('processing', {}).get('sample_size', 0)
+
     # 定义要处理的数据集
     datasets_to_process = {
-        "compliance": processed_data_dir / f"{llm_name}_jailbreak_compliance.csv",
-        "refusal": processed_data_dir / f"{llm_name}_jailbreak_refusal.csv",
+        # "compliance": processed_data_dir / f"{llm_name}_jailbreak_compliance.csv",
+        # "refusal": processed_data_dir / f"{llm_name}_jailbreak_refusal.csv",
         "benign": processed_data_dir / "benign_prompts.csv",
     }
 
     # --- 3. 遍历并处理每个数据集 ---
     for name, path in datasets_to_process.items():
+
         if not path.is_file():
             logging.warning(f"未找到 '{name}' 的数据集文件，路径: {path}，正在跳过。")
             continue
 
         logging.info(f"--- 正在处理数据集: {name} ---")
         df = pd.read_csv(path)
+
+        # 如果在配置中指定了 sample_size，则对数据集进行随机采样
+        if sample_size > 0 and sample_size < len(df):
+            logging.info(f"数据集 '{name}' 包含 {len(df)} 个样本。正在根据配置随机采样 {sample_size} 个样本...")
+            df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
+
         total_activations = {layer: {'early_window': [], 'content_window': []} for layer in config['extraction']['layers']}
+        all_outputs_for_csv = []  # (新) 为当前数据集初始化一个列表来存储输出
         batch_size = config['processing']['batch_size']
 
-        # 判断是否应该使用基于 prompt 分组的嵌入缓存优化
-        use_grouping_cache = 'prompt' in df.columns and name in ["compliance", "refusal"]
+        # 判断是否应该使用基于 prompt 分组的优化
+        use_grouping = 'prompt' in df.columns and name in ["compliance", "refusal"]
 
-        # 按 'prompt' 分组，如果不需要缓存则创建一个包含所有数据的伪分组
-        grouped = df.groupby('prompt') if use_grouping_cache else [('all', df)]
+        # 按 'prompt' 分组，如果不需要分组则创建一个包含所有数据的伪分组
+        grouped = df.groupby('prompt') if use_grouping else [('all', df)]
         progress_bar = tqdm(total=len(df), desc=f"正在提取 {name}")
 
         # --- 4. 按分组处理 ---
         for prompt, group_df in grouped:
-            prompt_embeds = None
-            prompt_len = 0
-
             # --- 5. 在分组内按批次处理 ---
             for i in range(0, len(group_df), batch_size):
                 batch_df = group_df.iloc[i:i + batch_size]
 
-                # 如果启用缓存且这是该组的第一个批次，则计算并缓存提示嵌入
-                if use_grouping_cache and prompt_embeds is None:
-                    user_conversation = [{"role": "user", "content": prompt}]
-                    prompt_template = tokenizer.apply_chat_template(user_conversation, tokenize=False, add_generation_prompt=False)
-                    prompt_inputs = tokenizer(prompt_template, return_tensors="pt").to(config['processing']['device'])
-                    with torch.no_grad():
-                        # 计算一次性的提示嵌入和长度
-                        prompt_embeds = model.get_input_embeddings()(prompt_inputs.input_ids)
-                        prompt_len = prompt_inputs.input_ids.shape[1]
-
-                # 调用核心处理函数
-                batch_activations = process_batch(
+                # 调用核心处理函数，现在返回两个值
+                batch_activations, assistant_outputs = process_batch(
                     batch_df, model, tokenizer,
-                    config['generation'], config['extraction'], config['processing']['device'],
-                    prompt_embeds=prompt_embeds if use_grouping_cache else None,
-                    prompt_len=prompt_len if use_grouping_cache else 0,
+                    config['generation'], config['extraction'], config['processing']['device']
                 )
+
+                # 准备要写入 CSV 的数据
+                for idx, assistant_text in enumerate(assistant_outputs):
+                    original_row = batch_df.iloc[idx]
+                    output_record = {
+                        'prompt': original_row['prompt'],
+                        'assistant_output': assistant_text
+                    }
+                    if 'prefix' in original_row:
+                        output_record['prefix'] = original_row['prefix']
+                    all_outputs_for_csv.append(output_record)
 
                 # 收集当前批次的结果
                 for layer_idx, windows in batch_activations.items():
@@ -324,9 +291,16 @@ def main():
 
                 progress_bar.update(len(batch_df))
 
+                # 清理缓存和垃圾回收
+                del batch_activations, assistant_outputs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
         progress_bar.close()
 
         # --- 6. 聚合结果并保存 ---
+        # 保存激活 .pt 文件
         final_tensors = {}
         for layer_idx, windows in total_activations.items():
             final_tensors[layer_idx] = {}
@@ -337,7 +311,20 @@ def main():
         torch.save(final_tensors, output_path)
         logging.info(f"成功将 '{name}' 的激活保存到 {output_path}")
 
-    logging.info("所有数据集的激活提取过程已完成。")
+        # 保存自然语言输出 .csv 文件
+        if all_outputs_for_csv:
+            output_df = pd.DataFrame(all_outputs_for_csv)
+            # 重新排序以获得更清晰的输出
+            if 'prefix' in output_df.columns:
+                output_df = output_df[['prompt', 'prefix', 'assistant_output']]
+            else:
+                output_df = output_df[['prompt', 'assistant_output']]
+
+            output_csv_path = output_dir / f"{llm_name}_{name}_outputs.csv"
+            output_df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
+            logging.info(f"成功将 '{name}' 的自然语言输出保存到 {output_csv_path}")
+
+    logging.info("所有数据集的激活提取和输出保存过程已完成。")
 
 
 if __name__ == "__main__":
