@@ -8,11 +8,13 @@ dataset_llm_name: "vicuna-7b-v1.5"
 
 # 用于加载以提取激活的 Hugging Face 模型标识符。
 # 理想情况下，这应与 `dataset_llm_name` 是同一个模型。
-model_name: "../../../models/Llama-3.2-3B-Instruct"
+model_name: "../../../models/vicuna_7b_v1_5"
 model_kwargs:
   # 使用 "auto" 自动选择最佳数据类型（例如，在 Ampere 架构上为 bfloat16）。
   # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
   torch_dtype: "bfloat16"
+  trust_remote_code: True
+  load_in_8bit: True
 
 # --- 路径（相对于项目根目录 SARC/）---
 # 脚本 01 处理后的数据集所在的目录。
@@ -47,10 +49,10 @@ generation:
 # 通用操作设置。
 processing:
   # 通过模型处理样本的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 2
+  batch_size: 1
   # 运行模型的设备。例如："cuda:0"、"cpu"。
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。
   # 设置为 null 或 0 来使用完整数据集。
-  sample_size: 50
+  sample_size: 10
 

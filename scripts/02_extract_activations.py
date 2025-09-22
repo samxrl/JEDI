@@ -24,9 +24,29 @@ from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import gc
+from typing import List
 
 # 配置基本日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def find_subsequence(main_list: List[int], sub_list: List[int]) -> int:
+    """
+    在主列表中查找子列表的起始索引。
+
+    Args:
+        main_list (List[int]): 主 token ID 列表。
+        sub_list (List[int]): 要查找的子 token ID 列表。
+
+    Returns:
+        int: 子列表在主列表中的起始索引，如果未找到则返回 -1。
+    """
+    main_len = len(main_list)
+    sub_len = len(sub_list)
+    for i in range(main_len - sub_len + 1):
+        if main_list[i:i + sub_len] == sub_list:
+            return i
+    return -1
 
 
 def get_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str):
@@ -35,30 +55,45 @@ def get_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str):
 
     Args:
         model_name (str): 要从 Hugging Face Hub 加载的模型的名称。
-        model_kwargs (dict): 模型加载的关键字参数 (例如, torch_dtype)。
-        device (str): 要将模型移动到的设备。
+        model_kwargs (dict): 模型加载的关键字参数 (例如, torch_dtype, load_in_8bit)。
+        device (str): 如果不使用 8-bit 加载，要将模型移动到的设备。
 
     Returns:
         tuple: 一个包含已加载模型、分词器和模型配置的元组。
     """
     logging.info(f"正在加载模型 '{model_name}'...")
+    # 复制关键字参数以避免修改原始配置字典
+    kwargs = model_kwargs.copy()
+
     # 安全地评估 torch_dtype 字符串, 将其从字符串转换为 torch.dtype 对象
-    if "torch_dtype" in model_kwargs and isinstance(model_kwargs["torch_dtype"], str):
+    if "torch_dtype" in kwargs and isinstance(kwargs["torch_dtype"], str):
         try:
-            model_kwargs["torch_dtype"] = getattr(torch, model_kwargs["torch_dtype"])
+            kwargs["torch_dtype"] = getattr(torch, kwargs["torch_dtype"])
         except AttributeError:
             # 如果是 "auto"，则保持为 "auto"，由 transformers 自动处理
-            if model_kwargs["torch_dtype"] != "auto":
-                raise ValueError(f"无效的 torch_dtype: {model_kwargs['torch_dtype']}")
+            if kwargs["torch_dtype"] != "auto":
+                raise ValueError(f"无效的 torch_dtype: {kwargs['torch_dtype']}")
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs).to(device)
+    # 检查是否以 8-bit 模式加载
+    load_in_8bit = kwargs.get("load_in_8bit", False)
+    if load_in_8bit:
+        logging.info("正在以 8-bit 模式加载模型。")
+        # 8-bit 加载通常与 device_map="auto" 配合使用效果最好
+        if "device_map" not in kwargs:
+            kwargs["device_map"] = "auto"
+        # 以 8-bit 量化加载模型
+        model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+    else:
+        # 用于全精度加载的原始逻辑
+        model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs).to(device)
+
     model.eval()  # 将模型设置为评估模式
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     # 如果分词器没有 pad token, 将其设置为 eos token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
 
     logging.info("模型和分词器加载成功。")
     return model, tokenizer, config
@@ -102,11 +137,14 @@ def process_batch(
         # 对于良性数据，直接使用标准模板让模型自由生成
         full_input_texts = tokenizer.apply_chat_template(conversations, tokenize=False, add_generation_prompt=True)
     else:
-        # --- 手动构建输入，确保前缀后无结束标记 ---
-        user_turn = [conversations[0][0]]
-        prompt_part_str = tokenizer.apply_chat_template(user_turn, tokenize=False, add_generation_prompt=True)
-        prefixes = [conv[1]['content'] for conv in conversations]
-        full_input_texts = [prompt_part_str + p for p in prefixes]
+        # --- 新策略：应用完整的对话模板，然后移除EOS标记 ---
+        full_input_texts = []
+        for conv in conversations:
+            text = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
+            if tokenizer.eos_token:
+                text = text.rstrip()  # 移除末尾空白
+                text = text[:-len(tokenizer.eos_token)]
+            full_input_texts.append(text)
 
     # 对最终的文本输入进行分词
     inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
@@ -121,41 +159,50 @@ def process_batch(
             do_sample=False
         )
 
-        # 只解码新生成的部分，并根据需要拼接前缀
-        generated_tokens_only = generated_sequences[:, prompt_len:]
-        decoded_new_parts = tokenizer.batch_decode(generated_tokens_only, skip_special_tokens=True)
-
+        # --- 解码和索引查找 ---
         assistant_outputs = []
+        prefix_start_indices = [-1] * current_batch_size  # 存储索引以供重用
+
         if is_benign_batch:
-            # 对于良性样本，输出就是新生成的内容
-            assistant_outputs = decoded_new_parts
+            generated_tokens_only = generated_sequences[:, prompt_len:]
+            assistant_outputs = tokenizer.batch_decode(generated_tokens_only, skip_special_tokens=True)
         else:
-            # 对于越狱样本，输出是 "前缀 + 新生成的内容"
-            prefixes = [conv[1]['content'] for conv in conversations]
             for i in range(current_batch_size):
-                assistant_outputs.append(prefixes[i] + decoded_new_parts[i])
+                prefix_text = conversations[i][1]['content']
+                prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+
+                # 在输入的 token ID 中搜索前缀的 token ID
+                prompt_ids_list = inputs['input_ids'][i].tolist()
+                start_idx = find_subsequence(prompt_ids_list, prefix_ids)
+
+                if start_idx != -1:
+                    prefix_start_indices[i] = start_idx
+                    # 从找到的精确位置开始解码，得到 "前缀 + 生成内容"
+                    tokens_to_decode = generated_sequences[i, start_idx:]
+                    output_text = tokenizer.decode(tokens_to_decode, skip_special_tokens=True)
+                    assistant_outputs.append(output_text)
+                else:
+                    # 如果未找到前缀 token（不太可能发生，但作为保障），则回退
+                    logging.warning(f"无法为样本 {i} 定位前缀 token。回退到基于长度的解码。")
+                    generated_tokens_only = generated_sequences[i, prompt_len:]
+                    decoded_new_part = tokenizer.decode(generated_tokens_only, skip_special_tokens=True)
+                    assistant_outputs.append(prefix_text + decoded_new_part)
 
         # --- 步骤 2: 对完整序列进行一次前向传播，以获取所有隐藏状态 ---
-        # 这种方法结构统一，可以可靠地处理所有情况
         full_outputs = model(generated_sequences, output_hidden_states=True)
-        # 立即将所有隐藏状态移至 CPU 以释放显存
         all_hidden_states = [h.cpu() for h in full_outputs.hidden_states]
 
     batch_activations = {layer: {'early_window': [], 'content_window': []} for layer in extraction_config['layers']}
 
     # --- 提取激活 ---
-    # `all_hidden_states` 是一个元组，每个元素对应一层，形状为 [batch, seq, hidden]
     for layer_idx in extraction_config['layers']:
         layer_hidden_states = all_hidden_states[layer_idx]
 
-        # 提取内容窗口 (W_cont) 的激活
-        # 内容窗口是提示之后的所有部分
+        # 提取内容窗口 (W_cont) 的激活 (无变化)
         content_window_states = layer_hidden_states[:, prompt_len:, :]
         if content_window_states.shape[1] > 0:
             agg_content = aggregate_activations(content_window_states, extraction_config['aggregation'])
-            # 结果需要按样本拆分
             for i in range(current_batch_size):
-                # 此处的 .cpu() 现在是多余的，但无害
                 batch_activations[layer_idx]['content_window'].append(agg_content[i].unsqueeze(0).cpu())
 
         if is_benign_batch:
@@ -163,11 +210,9 @@ def process_batch(
 
         # 提取早期窗口 (W_early) 的激活
         for i in range(current_batch_size):
-            # --- 精确定位前缀起始位置的鲁棒方法 ---
-            user_turn = [conversations[i][0]]
-            templated_user_part = tokenizer.apply_chat_template(user_turn, tokenize=False, add_generation_prompt=True)
-            user_part_tokens = tokenizer(templated_user_part, add_special_tokens=False)['input_ids']
-            prefix_start_idx = len(user_part_tokens)
+            prefix_start_idx = prefix_start_indices[i]
+            if prefix_start_idx == -1:
+                continue  # 如果之前未找到，则跳过
 
             prefix_text = conversations[i][1]['content']
             prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
@@ -179,10 +224,10 @@ def process_batch(
                     # 从当前样本的层隐藏状态中切片
                     early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
                     agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
-                    # 此处的 .cpu() 现在是多余的，但无害
                     batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
                 else:
-                    logging.warning(f"样本 {i} 的前缀索引 [{prefix_start_idx}:{prefix_end_idx}] 超出提示长度 {prompt_len}。可能由截断引起。")
+                    logging.warning(
+                        f"样本 {i} 的前缀索引 [{prefix_start_idx}:{prefix_end_idx}] (通过 token 搜索得到) 对于 prompt_len {prompt_len} 无效。")
 
     return batch_activations, assistant_outputs
 
@@ -210,7 +255,8 @@ def main():
     output_dir = base_dir / config['output_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    llm_name = config['dataset_llm_name']
+    dataset_llm_name = config['dataset_llm_name']
+    llm_name = config['model_name'].split('/')[-1]
 
     model, tokenizer, model_config_details = get_model_and_tokenizer(config['model_name'], config.get('model_kwargs', {}),
                                                                      config['processing']['device'])
@@ -230,8 +276,8 @@ def main():
 
     # 定义要处理的数据集
     datasets_to_process = {
-        # "compliance": processed_data_dir / f"{llm_name}_jailbreak_compliance.csv",
-        # "refusal": processed_data_dir / f"{llm_name}_jailbreak_refusal.csv",
+        "compliance": processed_data_dir / f"{dataset_llm_name}_jailbreak_compliance.csv",
+        "refusal": processed_data_dir / f"{dataset_llm_name}_jailbreak_refusal.csv",
         "benign": processed_data_dir / "benign_prompts.csv",
     }
 
