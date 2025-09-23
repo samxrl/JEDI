@@ -28,12 +28,14 @@ import pandas as pd
 import random
 
 
-def create_paired_samples(prompt: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
+def create_paired_samples(prompt: str, behavior: str, functional_category: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
     """
     为给定的提示词创建成对的“满足”(A1)和“拒绝”(A2)样本。
 
     Args:
         prompt (str): 用户的原始越狱提示。
+        behavior (str): 行为描述。
+        functional_category (str): 功能类别。
         compliance_prefixes (list): 表示模型满足意图的前缀列表。
         refusal_prefixes (list): 表示模型拒绝意图的前缀列表。
 
@@ -56,7 +58,9 @@ def create_paired_samples(prompt: str, compliance_prefixes: list, refusal_prefix
             "prompt": prompt,
             "prefix": prefix,
             "category": "compliance",  # 类别标签，用于后续处理
-            "conversation": conversation
+            "conversation": conversation,
+            "behavior": behavior,
+            "FunctionalCategory": functional_category,
         })
 
     # --- 创建 A2 (拒绝) 样本 ---
@@ -70,7 +74,9 @@ def create_paired_samples(prompt: str, compliance_prefixes: list, refusal_prefix
             "prompt": prompt,
             "prefix": prefix,
             "category": "refusal",  # 类别标签
-            "conversation": conversation
+            "conversation": conversation,
+            "behavior": behavior,
+            "FunctionalCategory": functional_category,
         })
 
     return compliance_samples, refusal_samples
@@ -138,7 +144,7 @@ def process_dataset(config: dict):
             with open(input_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 # 假设输入文件是 JSONL 格式，每行有一个 'prompt' 键
-                prompts = [line["prompt"] for line in data["records"]]
+                records = data["records"]
         except FileNotFoundError:
             print(f"ERROR: 输入文件未找到: {input_path.resolve()}")
             return
@@ -146,7 +152,7 @@ def process_dataset(config: dict):
             print(f"ERROR: 解析文件 {input_path.resolve()} 时出错: {e}. 请确保文件是有效的 JSON 格式，且'records'列表下每项都有 'prompt' 键。")
             return
 
-        print(f"从 {input_path.resolve()} 加载了 {len(prompts)} 条越狱提示。")
+        print(f"从 {input_path.resolve()} 加载了 {len(records)} 条越狱提示。")
         print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
 
         with open(compliance_output_path, 'w', encoding='utf-8', newline='') as f_comply, \
@@ -156,24 +162,30 @@ def process_dataset(config: dict):
             refuse_writer = csv.writer(f_refuse)
 
             # 写入CSV标题行
-            header = ["prompt", "prefix", "category", "conversation"]
+            header = ["prompt", "prefix", "category", "conversation", "behavior", "FunctionalCategory"]
             comply_writer.writerow(header)
             refuse_writer.writerow(header)
 
-            for prompt in tqdm(prompts, desc="处理越狱提示中"):
+            for record in tqdm(records, desc="处理越狱提示中"):
+                prompt = record["prompt"]
+                behavior = record["behavior"]
+                functional_category = record["FunctionalCategory"]
+
                 compliance_samples, refusal_samples = create_paired_samples(
                     prompt,
+                    behavior,
+                    functional_category,
                     compliance_prefixes,
                     refusal_prefixes
                 )
                 for sample in compliance_samples:
                     # 将 conversation 字段序列化为 JSON 字符串
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory']]
                     comply_writer.writerow(row)
                 for sample in refusal_samples:
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory']]
                     refuse_writer.writerow(row)
 
         print(f"成功将满足型 (A1) 样本写入: {compliance_output_path.resolve()}")

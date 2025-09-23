@@ -3,6 +3,7 @@ import json
 import random
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
+import pandas as pd
 
 # 固定的攻击方法列表（你可以在这里写死 5 个方法名）
 ATTACK_METHODS = [
@@ -13,10 +14,12 @@ ATTACK_METHODS = [
     "HumanJailbreaks",
 ]
 
+
 def _as_path(p) -> Path:
     return p if isinstance(p, Path) else Path(p)
 
-def load_by_attack(root, llm) -> Dict[str, List[Dict[str, Any]]]:
+
+def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
     """
     读取每个攻击方法下、指定 LLM 的 json，筛选 label==1 的样本。
     返回按攻击方法分桶的候选列表。
@@ -50,8 +53,20 @@ def load_by_attack(root, llm) -> Dict[str, List[Dict[str, Any]]]:
                 prompt_text = item.get("test_case") or item.get("prompt")
                 if not prompt_text:
                     continue
+
+                # 从 behaviors_df 中查找行为
+                try:
+                    behavior = behaviors_df.loc[key, 'Behavior']
+                    FunctionalCategory = behaviors_df.loc[key, 'FunctionalCategory']
+                except KeyError:
+                    print(f"[WARN] 在行为文件中未找到 BehaviorID '{key}'。")
+                    behavior = ""  # 如果未找到，默认为空字符串
+                    FunctionalCategory = ""
+
                 buckets[attack].append({
+                    "behavior": behavior,
                     "prompt": prompt_text,
+                    "FunctionalCategory": FunctionalCategory,
                     "source": {
                         "attack": attack,
                         "file": str(json_path),
@@ -59,6 +74,7 @@ def load_by_attack(root, llm) -> Dict[str, List[Dict[str, Any]]]:
                     },
                 })
     return buckets
+
 
 def _plan_quota(buckets: Dict[str, List[Dict[str, Any]]], n_total: int, seed: int) -> Dict[str, int]:
     """
@@ -115,12 +131,26 @@ def _plan_quota(buckets: Dict[str, List[Dict[str, Any]]], n_total: int, seed: in
 
     return quota
 
-def sample_equal(llm: str, root, n: int = 100, seed: int = 42, out=None):
+
+def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: int = 42, out=None):
     root = _as_path(root)
     out = _as_path(out) if out else Path(f"{llm}_sampled_equal.json")
     random.seed(seed)
 
-    buckets = load_by_attack(root, llm)
+    # 加载 behaviors csv
+    try:
+        behaviors_df = pd.read_csv(behaviors_path)
+        # 假设 CSV 文件有 'BehaviorID' 和 'Behavior' 列
+        # 并且 json 文件中的键（如 'queer_lgbtq_harassment_text'）是 BehaviorID
+        behaviors_df.set_index('BehaviorID', inplace=True)
+    except FileNotFoundError:
+        print(f"[ERROR] 在路径中未找到行为文件： {behaviors_path}")
+        return
+    except KeyError:
+        print(f"[ERROR] 行为文件必须包含 'BehaviorID' 列。")
+        return
+
+    buckets = load_by_attack(root, llm, behaviors_df)
     total_candidates = sum(len(v) for v in buckets.values())
     if total_candidates == 0:
         raise RuntimeError("未找到任何 label==1 的越狱提示，请检查路径与数据。")
@@ -164,14 +194,20 @@ def sample_equal(llm: str, root, n: int = 100, seed: int = 42, out=None):
     print(f"完成：总候选 {total_candidates}，按等量策略采样 {len(records)} 条 → {out}")
     print("每个攻击方法分配：", {k: v for k, v in quota.items() if v > 0})
 
+
 if __name__ == "__main__":
     # 修改 root 和 llm 名称即可
     llm = "vicuna_7b_v1_5"
 
+    # 定义 behaviors csv 文件路径
+    # 用户应将 'harmbench_behaviors_text_all.csv' 文件放在此处
+    behaviors_csv_path = "../../harmbench_results_initial_release/harmbench_results_initial_release/harmbench_behaviors_text_all.csv"
+
     sample_equal(
-        llm= llm,               # 指定 LLM 名称
-        root="../../harmbench_results_initial_release/harmbench_results_initial_release/results_text",         # 根目录路径
-        n=100,                     # 采样数
-        seed=42,                 # 随机种子
+        llm=llm,  # 指定 LLM 名称
+        root="../../harmbench_results_initial_release/harmbench_results_initial_release/results_text",  # 根目录路径
+        behaviors_path=behaviors_csv_path,  # behaviors csv 的路径
+        n=100,  # 采样数
+        seed=42,  # 随机种子
         out=Path("data/raw/" + llm + "_sampled_jailbreaks.json"),
     )
