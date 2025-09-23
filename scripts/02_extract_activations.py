@@ -360,11 +360,14 @@ def main():
         # 保存自然语言输出 .csv 文件
         if all_outputs_for_csv:
             output_df = pd.DataFrame(all_outputs_for_csv)
-            # 重新排序以获得更清晰的输出
+            # [修改] 添加 'label' 列并初始化
+            output_df['label'] = None
+
+            # 重新排序以获得更清晰的输出，并包含 'label' 列
             if 'prefix' in output_df.columns:
-                output_df = output_df[['prompt', 'prefix', 'assistant_output']]
+                output_df = output_df[['prompt', 'prefix', 'assistant_output', 'label']]
             else:
-                output_df = output_df[['prompt', 'assistant_output']]
+                output_df = output_df[['prompt', 'assistant_output', 'label']]
 
             output_csv_path = output_dir / f"{llm_name}_{name}_outputs.csv"
             output_df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
@@ -375,4 +378,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
