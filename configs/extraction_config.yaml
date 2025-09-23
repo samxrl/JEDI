@@ -14,7 +14,7 @@ model_kwargs:
   # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
   torch_dtype: "bfloat16"
   trust_remote_code: True
-  load_in_8bit: True
+  load_in_8bit: False
 
 # --- 路径（相对于项目根目录 SARC/）---
 # 脚本 01 处理后的数据集所在的目录。
@@ -49,10 +49,10 @@ generation:
 # 通用操作设置。
 processing:
   # 通过模型处理样本的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 1
+  batch_size: 15
   # 运行模型的设备。例如："cuda:0"、"cpu"。
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。
   # 设置为 null 或 0 来使用完整数据集。
-  sample_size: 10
+  sample_size: 50
 

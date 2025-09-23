@@ -252,11 +252,14 @@ def main():
     # --- 2. 设置路径和加载模型 ---
     base_dir = Path(__file__).parent.parent
     processed_data_dir = base_dir / config['processed_data_dir']
-    output_dir = base_dir / config['output_dir']
+
+    # 从配置中获取模型名称，并创建特定于模型的输出目录
+    llm_name = config['model_name'].split('/')[-1]
+    output_dir = base_dir / config['output_dir'] / llm_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    logging.info(f"所有激活和输出文件将保存到: {output_dir}")
 
     dataset_llm_name = config['dataset_llm_name']
-    llm_name = config['model_name'].split('/')[-1]
 
     model, tokenizer, model_config_details = get_model_and_tokenizer(config['model_name'], config.get('model_kwargs', {}),
                                                                      config['processing']['device'])

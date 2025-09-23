@@ -1,0 +1,36 @@
+# SARC/configs/judgment_config.yaml
+#
+# 02_judge_harmfulness.py 脚本的配置文件。
+# 该脚本用于评估由 02_extract_activations.py 生成的 assistant_output 的有害性。
+
+# 此项必须与 extraction_config.yaml 中的 'dataset_llm_name' 匹配，
+# 以便找到正确的输入 CSV 文件。
+dataset_llm_name: "vicuna-7b-v1.5"
+
+# 用于构成输入 CSV 文件名的 LLM 名称。
+# 此项也应与 extraction_config.yaml 中的 'model_name' 的基本名称匹配。
+llm_name: "vicuna_7b_v1_5"
+
+# --- 判断模型配置 ---
+# 用于判断有害性的分类器模型。
+# 推荐使用 HarmBench 提供的分类器。
+# URL: https://huggingface.co/cais/HarmBench-Llama-2-13b-cls
+classifier_model_name: "../../../models/HarmBench-Llama-2-13b-cls"
+classifier_model_kwargs:
+  torch_dtype: "bfloat16"
+  trust_remote_code: True
+  # 使用 "auto" 来自动分配模型到可用的 GPU。
+  device_map: "auto"
+
+# --- 路径配置 (相对于项目根目录 SARC/) ---
+# 存放由 02_extract_activations.py 生成的 *_outputs.csv 文件的目录。
+# 这应与 extraction_config.yaml 中的 'output_dir' 相同。
+data_dir: "data/activations"
+
+# --- 处理参数 ---
+processing:
+  # 判断模型通常较大，建议逐个处理以避免显存问题。
+  batch_size: 1
+  # 运行分类器模型的设备。如果使用了 device_map: "auto"，此项将被忽略。
+  device: "cuda"
+
