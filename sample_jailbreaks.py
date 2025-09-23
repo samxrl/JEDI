@@ -28,7 +28,11 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
     buckets: Dict[str, List[Dict[str, Any]]] = {a: [] for a in ATTACK_METHODS}
 
     for attack in ATTACK_METHODS:
-        json_path = root / attack / llm / "results" / f"{llm}.json"
+        if attack == "HumanJailbreaks":
+            # 人工越狱单独存放在 root/human_jailbreaks/llm/results/llm.json
+            json_path = root / attack / "default" / "results" / f"{llm}.json"
+        else:
+            json_path = root / attack / llm / "results" / f"{llm}.json"
         if not json_path.exists():
             print(f"[WARN] 文件不存在：{json_path}")
             continue
@@ -60,13 +64,13 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
                     FunctionalCategory = behaviors_df.loc[key, 'FunctionalCategory']
                 except KeyError:
                     print(f"[WARN] 在行为文件中未找到 BehaviorID '{key}'。")
-                    behavior = ""  # 如果未找到，默认为空字符串
-                    FunctionalCategory = ""
+                    continue # 跳过未找到的行为
 
                 buckets[attack].append({
                     "behavior": behavior,
                     "prompt": prompt_text,
                     "FunctionalCategory": FunctionalCategory,
+                    "ContextString": behaviors_df.loc[key, 'ContextString'] if FunctionalCategory == 'contextual' else "",
                     "source": {
                         "attack": attack,
                         "file": str(json_path),

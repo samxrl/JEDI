@@ -148,7 +148,7 @@ def process_batch(
 
     # 对最终的文本输入进行分词
     inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    prompt_len = inputs['input_ids'].shape[1]
+    prompt_len = inputs['input_ids'].shape[1]\
 
     with torch.no_grad():
         # --- 步骤 1: 生成完整的 token 序列 ---
@@ -331,6 +331,12 @@ def main():
                     }
                     if 'prefix' in original_row:
                         output_record['prefix'] = original_row['prefix']
+                    if 'behavior' in original_row:
+                        output_record['behavior'] = original_row['behavior']
+                    if 'FunctionalCategory' in original_row:
+                        output_record['FunctionalCategory'] = original_row['FunctionalCategory']
+                    if 'ContextString' in original_row:
+                        output_record['ContextString'] = original_row['ContextString']
                     all_outputs_for_csv.append(output_record)
 
                 # 收集当前批次的结果
@@ -363,12 +369,12 @@ def main():
         # 保存自然语言输出 .csv 文件
         if all_outputs_for_csv:
             output_df = pd.DataFrame(all_outputs_for_csv)
-            # [修改] 添加 'label' 列并初始化
+            # 添加 'label' 列并初始化
             output_df['label'] = None
 
             # 重新排序以获得更清晰的输出，并包含 'label' 列
             if 'prefix' in output_df.columns:
-                output_df = output_df[['prompt', 'prefix', 'assistant_output', 'label']]
+                output_df = output_df[['prompt', 'prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'assistant_output', 'label']]
             else:
                 output_df = output_df[['prompt', 'assistant_output', 'label']]
 

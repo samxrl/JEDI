@@ -28,7 +28,7 @@ import pandas as pd
 import random
 
 
-def create_paired_samples(prompt: str, behavior: str, functional_category: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
+def create_paired_samples(prompt: str, behavior: str, functional_category: str, context_string: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
     """
     为给定的提示词创建成对的“满足”(A1)和“拒绝”(A2)样本。
 
@@ -36,6 +36,7 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
         prompt (str): 用户的原始越狱提示。
         behavior (str): 行为描述。
         functional_category (str): 功能类别。
+        context_string (str): 上下文信息字符串。
         compliance_prefixes (list): 表示模型满足意图的前缀列表。
         refusal_prefixes (list): 表示模型拒绝意图的前缀列表。
 
@@ -61,6 +62,7 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
             "conversation": conversation,
             "behavior": behavior,
             "FunctionalCategory": functional_category,
+            "ContextString": context_string,
         })
 
     # --- 创建 A2 (拒绝) 样本 ---
@@ -77,6 +79,7 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
             "conversation": conversation,
             "behavior": behavior,
             "FunctionalCategory": functional_category,
+            "ContextString": context_string,
         })
 
     return compliance_samples, refusal_samples
@@ -155,14 +158,14 @@ def process_dataset(config: dict):
         print(f"从 {input_path.resolve()} 加载了 {len(records)} 条越狱提示。")
         print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
 
-        with open(compliance_output_path, 'w', encoding='utf-8', newline='') as f_comply, \
-                open(refusal_output_path, 'w', encoding='utf-8', newline='') as f_refuse:
+        with open(compliance_output_path, 'w', encoding='utf-8-sig', newline='') as f_comply, \
+                open(refusal_output_path, 'w', encoding='utf-8-sig', newline='') as f_refuse:
 
             comply_writer = csv.writer(f_comply)
             refuse_writer = csv.writer(f_refuse)
 
             # 写入CSV标题行
-            header = ["prompt", "prefix", "category", "conversation", "behavior", "FunctionalCategory"]
+            header = ["prompt", "prefix", "category", "conversation", "behavior", "FunctionalCategory", "ContextString"]
             comply_writer.writerow(header)
             refuse_writer.writerow(header)
 
@@ -170,22 +173,24 @@ def process_dataset(config: dict):
                 prompt = record["prompt"]
                 behavior = record["behavior"]
                 functional_category = record["FunctionalCategory"]
+                context_string = record["ContextString"] if functional_category == 'contextual' else ""
 
                 compliance_samples, refusal_samples = create_paired_samples(
                     prompt,
                     behavior,
                     functional_category,
+                    context_string,
                     compliance_prefixes,
                     refusal_prefixes
                 )
                 for sample in compliance_samples:
                     # 将 conversation 字段序列化为 JSON 字符串
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory']]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'], sample['ContextString']]
                     comply_writer.writerow(row)
                 for sample in refusal_samples:
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory']]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'], sample['ContextString']]
                     refuse_writer.writerow(row)
 
         print(f"成功将满足型 (A1) 样本写入: {compliance_output_path.resolve()}")
@@ -228,7 +233,7 @@ def process_dataset(config: dict):
                             all_samples.append({
                                 "prompt": str(prompt),
                                 "conversation": conversation_str,
-                                "source": Path(file_path).name
+                                "source": Path(file_path).name,
                             })
                     print(f"从 {file_path.resolve()} 成功采样 {actual_sample_size} 条良性提示。")
             except FileNotFoundError:
@@ -241,7 +246,7 @@ def process_dataset(config: dict):
             random.shuffle(all_samples)
 
             try:
-                with open(output_path, 'w', encoding='utf-8', newline='') as f_out:
+                with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
                     header = ["prompt", "conversation", "source"]
                     writer = csv.DictWriter(f_out, fieldnames=header)
                     writer.writeheader()
@@ -284,3 +289,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
