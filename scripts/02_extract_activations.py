@@ -88,10 +88,16 @@ def get_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str):
         model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs).to(device)
 
     model.eval()  # 将模型设置为评估模式
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        padding_side="left",  # 设置为左填充以避免生成时的告警
+    )
     # 如果分词器没有 pad token, 将其设置为 eos token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # （可选）确保模型配置与分词器同步
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
 
@@ -143,12 +149,14 @@ def process_batch(
             text = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
             if tokenizer.eos_token:
                 text = text.rstrip()  # 移除末尾空白
-                text = text[:-len(tokenizer.eos_token)]
+                if text.endswith(tokenizer.eos_token):
+                    text = text[:-len(tokenizer.eos_token)]
             full_input_texts.append(text)
 
     # 对最终的文本输入进行分词
     inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    prompt_len = inputs['input_ids'].shape[1]\
+    # 获取批次内所有输入序列填充后的统一长度。这是新内容开始生成的起点。
+    padded_prompt_len = inputs['input_ids'].shape[1]
 
     with torch.no_grad():
         # --- 步骤 1: 生成完整的 token 序列 ---
@@ -163,10 +171,15 @@ def process_batch(
         assistant_outputs = []
         prefix_start_indices = [-1] * current_batch_size  # 存储索引以供重用
 
+        # 使用统一的 padded_prompt_len 来分割出所有新生成的 token
+        generated_tokens_only = generated_sequences[:, padded_prompt_len:]
+        decoded_new_parts = tokenizer.batch_decode(generated_tokens_only, skip_special_tokens=True)
+
         if is_benign_batch:
-            generated_tokens_only = generated_sequences[:, prompt_len:]
-            assistant_outputs = tokenizer.batch_decode(generated_tokens_only, skip_special_tokens=True)
+            # 对于良性批次，解码后的新内容就是最终输出
+            assistant_outputs = decoded_new_parts
         else:
+            # 对于越狱批次，需要将前缀与新内容结合，或使用更精确的查找方法
             for i in range(current_batch_size):
                 prefix_text = conversations[i][1]['content']
                 prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
@@ -184,9 +197,8 @@ def process_batch(
                 else:
                     # 如果未找到前缀 token（不太可能发生，但作为保障），则回退
                     logging.warning(f"无法为样本 {i} 定位前缀 token。回退到基于长度的解码。")
-                    generated_tokens_only = generated_sequences[i, prompt_len:]
-                    decoded_new_part = tokenizer.decode(generated_tokens_only, skip_special_tokens=True)
-                    assistant_outputs.append(prefix_text + decoded_new_part)
+                    # 回退方案：将前缀文本与批量解码的新内容拼接
+                    assistant_outputs.append(prefix_text + decoded_new_parts[i])
 
         # --- 步骤 2: 对完整序列进行一次前向传播，以获取所有隐藏状态 ---
         full_outputs = model(generated_sequences, output_hidden_states=True)
@@ -198,18 +210,25 @@ def process_batch(
     for layer_idx in extraction_config['layers']:
         layer_hidden_states = all_hidden_states[layer_idx]
 
-        # 提取内容窗口 (W_cont) 的激活 (无变化)
-        content_window_states = layer_hidden_states[:, prompt_len:, :]
+        # 提取内容窗口 (W_cont) 的激活
+        # 对于左填充，所有新 token 都在 padded_prompt_len 之后开始，因此可以进行批处理
+        content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
+
+        # 批量聚合内容窗口
+        agg_content_batch = None
         if content_window_states.shape[1] > 0:
-            agg_content = aggregate_activations(content_window_states, extraction_config['aggregation'])
-            for i in range(current_batch_size):
-                batch_activations[layer_idx]['content_window'].append(agg_content[i].unsqueeze(0).cpu())
+            agg_content_batch = aggregate_activations(content_window_states, extraction_config['aggregation'])
 
-        if is_benign_batch:
-            continue
-
-        # 提取早期窗口 (W_early) 的激活
         for i in range(current_batch_size):
+            # 添加当前样本的内容窗口激活
+            if agg_content_batch is not None:
+                batch_activations[layer_idx]['content_window'].append(agg_content_batch[i].unsqueeze(0).cpu())
+
+            # 如果是良性批次，则没有早期窗口，跳过
+            if is_benign_batch:
+                continue
+
+            # 提取早期窗口 (W_early)
             prefix_start_idx = prefix_start_indices[i]
             if prefix_start_idx == -1:
                 continue  # 如果之前未找到，则跳过
@@ -220,14 +239,10 @@ def process_batch(
 
             if prefix_len > 0:
                 prefix_end_idx = prefix_start_idx + prefix_len
-                if prefix_start_idx < prefix_end_idx and prefix_end_idx <= prompt_len:
-                    # 从当前样本的层隐藏状态中切片
-                    early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
-                    agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
-                    batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
-                else:
-                    logging.warning(
-                        f"样本 {i} 的前缀索引 [{prefix_start_idx}:{prefix_end_idx}] (通过 token 搜索得到) 对于 prompt_len {prompt_len} 无效。")
+                # `find_subsequence` 确保了前缀索引在有效的、非填充的 token 区域内。
+                early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
+                agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
+                batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
 
     return batch_activations, assistant_outputs
 
@@ -387,3 +402,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
