@@ -1,0 +1,36 @@
+# SARC/configs/vector_extraction_config.yaml
+#
+# 03_extract_vectors.py 脚本的配置文件。
+# 该文件用于控制如何从激活中提取干预向量和条件向量。
+
+# 必须与 extraction_config.yaml 中的 `model_name` 的基本名称匹配。
+# 这用于在 `data_dir` 中定位正确的子目录。
+llm_name: "vicuna_7b_v1_5"
+
+# --- 路径配置 (相对于项目根目录 SARC/) ---
+# 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
+data_dir: "data/activations"
+# 保存最终产物（向量、白化矩阵）的目录。
+output_dir: "data/activations"
+
+# --- 白化参数 ---
+# 用于表征标准化。
+whitening:
+  # 在计算协方-差矩阵的逆时，为对角线添加一个小的正则化项。
+  # 这可以防止由于矩阵奇异或接近奇异而导致的数值不稳定性。
+  # 推荐值: 1e-5 到 1e-3
+  epsilon: 0.0001
+
+# --- PCA 参数 ---
+# 用于从激活差异中提取方向向量。
+pca:
+  # 要提取的主成分数量。对于我们的目的，我们只关心最重要的方向，
+  # 因此设置为 1。
+  n_components: 1
+
+# --- 去耦合配置 ---
+# (推荐) 减少干预向量和条件向量之间的相关性。
+decoupling:
+  # 是否启用去耦合步骤。
+  enabled: true
+
