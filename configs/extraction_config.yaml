@@ -4,11 +4,11 @@
 # 该文件指定了要使用的模型、要处理的数据以及如何提取隐藏状态激活。
 
 # 此项必须与 data_prep_config.yaml 中使用的 'llm_name' 匹配，以找到正确的输入文件。
-dataset_llm_name: "vicuna-7b-v1.5"
+dataset_llm_name: "qwen_7b_chat"
 
 # 用于加载以提取激活的 Hugging Face 模型标识符。
 # 理想情况下，这应与 `dataset_llm_name` 是同一个模型。
-model_name: "../../../models/vicuna_7b_v1_5"
+model_name: "../../../models/Qwen2-7B-Instruct"
 model_kwargs:
   # 使用 "auto" 自动选择最佳数据类型（例如，在 Ampere 架构上为 bfloat16）。
   # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
@@ -30,7 +30,7 @@ extraction:
   # transformer 块（解码器层）通常编号为 1 到 N。
   # 最后一层归一化通常是 LM 头之前的最后一层。
   # 32 层 LLaMA 模型的示例：
-  layers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
 
   # 将窗口内的 token 表示聚合成单个向量的方法。
   # 选项：
@@ -49,7 +49,7 @@ generation:
 # 通用操作设置。
 processing:
   # 通过模型处理样本的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 15
+  batch_size: 10
   # 运行模型的设备。例如："cuda:0"、"cpu"。
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。
