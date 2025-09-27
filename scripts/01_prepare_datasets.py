@@ -238,7 +238,8 @@ def process_dataset(config: dict):
                     for _, row in sampled_df.iterrows():
                         prompt = row[prompt_column]
                         if pd.notna(prompt):
-                            prompts_from_file.append(str(prompt))
+                            # 保存 prompt 和其来源文件名
+                            prompts_from_file.append((str(prompt), file_path.name))
 
                 all_prompts.extend(prompts_from_file)
                 print(f"从 {file_path.resolve()} 成功采样 {len(prompts_from_file)} 条良性提示。")
@@ -253,12 +254,12 @@ def process_dataset(config: dict):
             print(f"总共采样 {len(all_prompts)} 条良性提示进行处理。")
 
             with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
-                header = ["prompt", "prefix", "category", "conversation"]
+                header = ["prompt", "prefix", "category", "conversation", "source"]
                 writer = csv.writer(f_out)
                 writer.writerow(header)
 
                 total_samples_written = 0
-                for prompt in tqdm(all_prompts, desc="处理良性提示中"):
+                for prompt, source in tqdm(all_prompts, desc="处理良性提示中"):
                     compliance_samples, _ = create_paired_samples(
                         prompt=prompt,
                         behavior="",
@@ -271,7 +272,7 @@ def process_dataset(config: dict):
 
                     for sample in compliance_samples:
                         conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                        row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                        row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, source]
                         writer.writerow(row)
                         total_samples_written += 1
 
@@ -311,4 +312,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

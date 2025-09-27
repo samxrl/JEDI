@@ -338,6 +338,8 @@ def main():
                         output_record['FunctionalCategory'] = original_row['FunctionalCategory']
                     if 'ContextString' in original_row:
                         output_record['ContextString'] = original_row['ContextString']
+                    if 'source' in original_row:
+                        output_record['source'] = original_row['source']
                     all_outputs_for_csv.append(output_record)
 
                 # 收集当前批次的结果
@@ -374,8 +376,8 @@ def main():
             output_df = pd.DataFrame(all_outputs_for_csv)
 
             if name == "benign":
-                # 对于良性样本，不需要 label 列
-                cols_order = ['prompt', 'prefix', 'assistant_output']
+                # 对于良性样本，保留 source 列
+                cols_order = ['prompt', 'prefix', 'assistant_output', 'source']
                 final_cols = [col for col in cols_order if col in output_df.columns]
                 output_df = output_df[final_cols]
             else:
@@ -394,4 +396,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

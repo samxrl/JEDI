@@ -261,17 +261,33 @@ def plot_pca_visualizations(
         v_l = vectors[layer].get('v')
         c_l = vectors[layer].get('c')
 
+        # 获取坐标轴范围以确定箭头缩放比例
+        xlim = ax.get_xlim()
+        axis_width = xlim[1] - xlim[0]
+        arrow_length = axis_width * 0.3  # 箭头长度为坐标轴宽度的30%
+
         if v_l is not None and torch.norm(v_l) > 0:
-            # 修改点 1：使用主成分矩阵直接投影方向向量（不做 centering）
+            # 使用主成分矩阵直接投影方向向量（不做 centering）
             proj_v = (v_l.numpy().reshape(1, -1)) @ pca.components_.T
-            ax.quiver(0, 0, proj_v[0, 0], proj_v[0, 1], color=vec_colors['v_vector'], scale=1, scale_units='xy', angles='xy', width=0.01,
-                      label=r'$v_l$')
+            # 归一化投影后的二维向量
+            proj_v_norm = np.linalg.norm(proj_v)
+            if proj_v_norm > 1e-9:
+                scaled_proj_v = (proj_v / proj_v_norm) * arrow_length
+                ax.quiver(0, 0, scaled_proj_v[0, 0], scaled_proj_v[0, 1], color=vec_colors['v_vector'],
+                          scale=1, scale_units='xy', angles='xy', width=0.01,
+                          label=r'$v_l$')
 
         if c_l is not None and torch.norm(c_l) > 0:
-            # 修改点 1：使用主成分矩阵直接投影方向向量（不做 centering）
+            # 使用主成分矩阵直接投影方向向量（不做 centering）
             proj_c = (c_l.numpy().reshape(1, -1)) @ pca.components_.T
-            ax.quiver(0, 0, proj_c[0, 0], proj_c[0, 1], color=vec_colors['c_vector'], scale=1, scale_units='xy', angles='xy', width=0.01,
-                      label=r'$c_l$')
+            # 归一化投影后的二维向量
+            proj_c_norm = np.linalg.norm(proj_c)
+            if proj_c_norm > 1e-9:
+                scaled_proj_c = (proj_c / proj_c_norm) * arrow_length
+                ax.quiver(0, 0, scaled_proj_c[0, 0], scaled_proj_c[0, 1], color=vec_colors['c_vector'],
+                          scale=1, scale_units='xy', angles='xy', width=0.01,
+                          label=r'$c_l$')
+
 
         ax.set_title(f"Layer {layer}")
 
@@ -444,7 +460,7 @@ def main():
             layers=layers,
             activations=preprocessed_activations_for_plot['early_window'],
             vectors=all_vectors_for_plot,
-            output_dir=output_dir,
+            output_dir=output_dir, # 保存到与产物相同的目录
             whitening_enabled=whitening_enabled,
             sample_size=vis_config.get('sample_size', 200)
         )
@@ -454,7 +470,7 @@ def main():
             layers=layers,
             activations=preprocessed_activations_for_plot['content_window'],
             vectors=all_vectors_for_plot,
-            output_dir=output_dir,
+            output_dir=output_dir, # 保存到与产物相同的目录
             whitening_enabled=whitening_enabled,
             sample_size=vis_config.get('sample_size', 200)
         )
@@ -464,3 +480,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

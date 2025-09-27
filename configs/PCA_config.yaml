@@ -18,7 +18,7 @@ output_dir: "data/activations"
 whitening:
   # 在计算协方-差矩阵的逆时，为对角线添加一个小的正则化项。
   # 这可以防止由于矩阵奇异或接近奇异而导致的数值不稳定性。
-  enabled: true
+  enabled: false
   # 推荐值: 1e-5 到 1e-3
   epsilon: 0.0001
 
