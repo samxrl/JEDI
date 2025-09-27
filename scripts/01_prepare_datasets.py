@@ -10,9 +10,10 @@
 3.  为每个越狱提示，生成两种类型的对话样本：
     - A1 (满足型): 用户提示 + 模型满足的前缀。
     - A2 (拒绝型): 用户提示 + 模型拒绝的前缀。
-4.  将生成的对话样本以结构化的 CSV 格式保存到处理后的数据目录中。
+4.  处理良性（benign）数据集，将其与“满足”前缀配对，生成 B1 (良性-满足) 样本。
+5.  将所有生成的对话样本以结构化的 CSV 格式保存到处理后的数据目录中。
     - 每个样本包含原始提示、所用前缀、类别以及符合模型输入的对话结构（对话结构将作为JSON字符串存储）。
-5.  （可选）处理良性（benign）数据集，将其转换为统一的对话格式并存为 CSV。
+
 
 如何运行:
 python scripts/01_prepare_datasets.py --config configs/data_prep_config.yaml
@@ -28,17 +29,28 @@ import pandas as pd
 import random
 
 
-def create_paired_samples(prompt: str, behavior: str, functional_category: str, context_string: str, compliance_prefixes: list, refusal_prefixes: list) -> tuple[list, list]:
+def create_paired_samples(
+        prompt: str,
+        behavior: str,
+        functional_category: str,
+        context_string: str,
+        compliance_prefixes: list,
+        refusal_prefixes: list,
+        compliance_category: str = "compliance",
+        refusal_category: str = "refusal"
+) -> tuple[list, list]:
     """
-    为给定的提示词创建成对的“满足”(A1)和“拒绝”(A2)样本。
+    为给定的提示词创建成对的样本。
 
     Args:
-        prompt (str): 用户的原始越狱提示。
+        prompt (str): 用户的原始提示。
         behavior (str): 行为描述。
         functional_category (str): 功能类别。
         context_string (str): 上下文信息字符串。
         compliance_prefixes (list): 表示模型满足意图的前缀列表。
         refusal_prefixes (list): 表示模型拒绝意图的前缀列表。
+        compliance_category (str): 满足型样本的类别标签。
+        refusal_category (str): 拒绝型样本的类别标签。
 
     Returns:
         tuple[list, list]: 一个元组，包含两个列表：(满足样本列表, 拒绝样本列表)。
@@ -47,8 +59,7 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
     compliance_samples = []
     refusal_samples = []
 
-    # --- 创建 A1 (满足) 样本 ---
-    # 结构: 用户提示 (prompt) + 早期满足前缀 (prefix)
+    # --- 创建满足样本 ---
     for prefix in compliance_prefixes:
         # 构建符合模型对话模板的输入结构
         conversation = [
@@ -58,15 +69,14 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
         compliance_samples.append({
             "prompt": prompt,
             "prefix": prefix,
-            "category": "compliance",  # 类别标签，用于后续处理
+            "category": compliance_category,
             "conversation": conversation,
             "behavior": behavior,
             "FunctionalCategory": functional_category,
             "ContextString": context_string,
         })
 
-    # --- 创建 A2 (拒绝) 样本 ---
-    # 结构: 用户提示 (prompt) + 早期拒绝前缀 (prefix)
+    # --- 创建拒绝样本 ---
     for prefix in refusal_prefixes:
         conversation = [
             {"role": "user", "content": prompt},
@@ -75,7 +85,7 @@ def create_paired_samples(prompt: str, behavior: str, functional_category: str, 
         refusal_samples.append({
             "prompt": prompt,
             "prefix": prefix,
-            "category": "refusal",  # 类别标签
+            "category": refusal_category,
             "conversation": conversation,
             "behavior": behavior,
             "FunctionalCategory": functional_category,
@@ -93,14 +103,52 @@ def process_dataset(config: dict):
         config (dict): 从 YAML 文件加载的配置字典。
     """
     config_path = Path(config['__config_path__'])
-    base_dir = config_path.parent.parent  # config文件在configs目录下，所以要上两级
-
+    base_dir = config_path.parent.parent
     output_dir = base_dir / config['output_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"所有处理后的文件将保存在: {output_dir.resolve()}")
 
+    # --- 统一加载前缀列表 ---
+    prefixes_config = config.get('prefixes', {})
+    source_file = prefixes_config.get('source_file')
+    compliance_prefixes = []
+    refusal_prefixes = []
+
+    if source_file:
+        source_file_path = base_dir / source_file
+        print(f"从文件加载前缀: {source_file_path.resolve()}")
+        try:
+            with open(source_file_path, 'r', encoding='utf-8') as f:
+                prefix_data = json.load(f)
+
+            compliance_key = prefixes_config.get('compliance_key')
+            refusal_key = prefixes_config.get('refusal_key')
+
+            if not compliance_key or not refusal_key:
+                raise ValueError("当指定 'source_file' 时，配置文件中必须同时提供 'compliance_key' 和 'refusal_key'。")
+
+            compliance_prefixes = prefix_data.get(compliance_key, [])
+            refusal_prefixes = prefix_data.get(refusal_key, [])
+            print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
+
+        except FileNotFoundError:
+            print(f"ERROR: 前缀源文件未找到: {source_file_path.resolve()}")
+            return
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"ERROR: 解析前缀文件 {source_file_path.resolve()} 或查找指定的键时出错: {e}")
+            return
+    else:
+        # 如果未指定源文件，则尝试从配置中直接读取（旧版兼容）
+        print("从配置文件直接加载前缀列表...")
+        compliance_prefixes = prefixes_config.get('compliance', [])
+        refusal_prefixes = prefixes_config.get('refusal', [])
+        print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
+
     # --- 处理越狱数据集 ---
     if 'jailbreak_dataset' in config:
+        if not compliance_prefixes or not refusal_prefixes:
+            raise ValueError("处理越狱数据集时，必须成功加载 'compliance' 和 'refusal' 前缀列表。")
+
         print("开始处理越狱数据集...")
         jb_config = config['jailbreak_dataset']
         input_path = base_dir / jb_config['input_file']
@@ -108,45 +156,9 @@ def process_dataset(config: dict):
         compliance_output_path = output_dir / f"{config['llm_name']}_jailbreak_compliance.csv"
         refusal_output_path = output_dir / f"{config['llm_name']}_jailbreak_refusal.csv"
 
-        # --- 加载前缀列表 ---
-        prefixes_config = config.get('prefixes', {})
-        source_file = prefixes_config.get('source_file')
-
-        if source_file:
-            source_file_path = base_dir / source_file
-            print(f"从文件加载前缀: {source_file_path.resolve()}")
-            try:
-                with open(source_file_path, 'r', encoding='utf-8') as f:
-                    prefix_data = json.load(f)
-
-                compliance_key = prefixes_config.get('compliance_key')
-                refusal_key = prefixes_config.get('refusal_key')
-
-                if not compliance_key or not refusal_key:
-                    raise ValueError("当指定 'source_file' 时，配置文件中必须同时提供 'compliance_key' 和 'refusal_key'。")
-
-                compliance_prefixes = prefix_data[compliance_key]
-                refusal_prefixes = prefix_data[refusal_key]
-
-            except FileNotFoundError:
-                print(f"ERROR: 前缀源文件未找到: {source_file_path.resolve()}")
-                return
-            except (json.JSONDecodeError, KeyError) as e:
-                print(f"ERROR: 解析前缀文件 {source_file_path.resolve()} 或查找指定的键时出错: {e}")
-                return
-        else:
-            # 如果未指定源文件，则尝试从配置中直接读取（旧版兼容）
-            print("从配置文件直接加载前缀列表...")
-            compliance_prefixes = prefixes_config.get('compliance', [])
-            refusal_prefixes = prefixes_config.get('refusal', [])
-
-        if not compliance_prefixes or not refusal_prefixes:
-            raise ValueError("未能成功加载 'compliance' 和 'refusal' 前缀列表。请检查配置文件。")
-
         try:
             with open(input_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # 假设输入文件是 JSONL 格式，每行有一个 'prompt' 键
                 records = data["records"]
         except FileNotFoundError:
             print(f"ERROR: 输入文件未找到: {input_path.resolve()}")
@@ -156,7 +168,6 @@ def process_dataset(config: dict):
             return
 
         print(f"从 {input_path.resolve()} 加载了 {len(records)} 条越狱提示。")
-        print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
 
         with open(compliance_output_path, 'w', encoding='utf-8-sig', newline='') as f_comply, \
                 open(refusal_output_path, 'w', encoding='utf-8-sig', newline='') as f_refuse:
@@ -164,7 +175,6 @@ def process_dataset(config: dict):
             comply_writer = csv.writer(f_comply)
             refuse_writer = csv.writer(f_refuse)
 
-            # 写入CSV标题行
             header = ["prompt", "prefix", "category", "conversation", "behavior", "FunctionalCategory", "ContextString"]
             comply_writer.writerow(header)
             refuse_writer.writerow(header)
@@ -184,13 +194,14 @@ def process_dataset(config: dict):
                     refusal_prefixes
                 )
                 for sample in compliance_samples:
-                    # 将 conversation 字段序列化为 JSON 字符串
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'], sample['ContextString']]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'],
+                           sample['ContextString']]
                     comply_writer.writerow(row)
                 for sample in refusal_samples:
                     conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'], sample['ContextString']]
+                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'],
+                           sample['ContextString']]
                     refuse_writer.writerow(row)
 
         print(f"成功将满足型 (A1) 样本写入: {compliance_output_path.resolve()}")
@@ -198,62 +209,73 @@ def process_dataset(config: dict):
 
     # --- 处理良性数据集 ---
     if 'benign_dataset' in config and config['benign_dataset'].get('input_files') is not None:
+        if not compliance_prefixes:
+            raise ValueError("处理良性数据集时，必须成功加载 'compliance' 前缀列表。")
+
         print("开始处理良性数据集...")
         benign_config = config['benign_dataset']
         input_files = benign_config['input_files']
         sample_size = benign_config.get('sample_size', 100)
-        output_path = output_dir / "benign_prompts.csv"
+        output_path = output_dir / f"{config['llm_name']}_benign_compliance.csv"
 
-        all_samples = []
-
+        all_prompts = []
         for file_info in input_files:
             file_path = base_dir / Path(file_info)
-
             prompt_column = 'prompt'
             try:
                 df = pd.read_csv(file_path)
-                # Handle potential variations in column names like 'Goal' or 'prompt'
                 if prompt_column not in df.columns:
-                    print(f"警告: 在 {file_path} 中未找到指定的列 '{prompt_column}'。将尝试使用'Goal'。")
                     if 'Goal' in df.columns:
                         prompt_column = 'Goal'
                     else:
-                        raise ValueError(f"在 {file_path} 中找不到合适的提示列。")
+                        raise ValueError(f"在 {file_path} 中找不到合适的提示列 ('prompt' or 'Goal')。")
 
                 num_rows = len(df)
+                prompts_from_file = []
                 if num_rows > 0:
                     actual_sample_size = min(sample_size, num_rows)
                     sampled_df = df.sample(n=actual_sample_size, random_state=42)
-
                     for _, row in sampled_df.iterrows():
                         prompt = row[prompt_column]
                         if pd.notna(prompt):
-                            conversation = [{"role": "user", "content": str(prompt)}]
-                            conversation_str = json.dumps(conversation, ensure_ascii=False)
-                            all_samples.append({
-                                "prompt": str(prompt),
-                                "conversation": conversation_str,
-                                "source": Path(file_path).name,
-                            })
-                    print(f"从 {file_path.resolve()} 成功采样 {actual_sample_size} 条良性提示。")
+                            prompts_from_file.append(str(prompt))
+
+                all_prompts.extend(prompts_from_file)
+                print(f"从 {file_path.resolve()} 成功采样 {len(prompts_from_file)} 条良性提示。")
+
             except FileNotFoundError:
                 print(f"ERROR: 输入文件未找到: {file_path.resolve()}")
             except Exception as e:
                 print(f"ERROR: 处理文件 {file_path.resolve()} 时出错: {e}")
 
-        if all_samples:
-            # 随机打乱所有样本
-            random.shuffle(all_samples)
+        if all_prompts:
+            random.shuffle(all_prompts)
+            print(f"总共采样 {len(all_prompts)} 条良性提示进行处理。")
 
-            try:
-                with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
-                    header = ["prompt", "conversation", "source"]
-                    writer = csv.DictWriter(f_out, fieldnames=header)
-                    writer.writeheader()
-                    writer.writerows(all_samples)
-                print(f"成功将 {len(all_samples)} 条良性样本写入: {output_path.resolve()}")
-            except IOError as e:
-                print(f"ERROR: 写入文件 {output_path.resolve()} 时出错: {e}")
+            with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
+                header = ["prompt", "prefix", "category", "conversation"]
+                writer = csv.writer(f_out)
+                writer.writerow(header)
+
+                total_samples_written = 0
+                for prompt in tqdm(all_prompts, desc="处理良性提示中"):
+                    compliance_samples, _ = create_paired_samples(
+                        prompt=prompt,
+                        behavior="",
+                        functional_category="",
+                        context_string="",
+                        compliance_prefixes=compliance_prefixes,
+                        refusal_prefixes=[],  # 良性样本不需要与拒绝前缀配对
+                        compliance_category="benign_compliance"
+                    )
+
+                    for sample in compliance_samples:
+                        conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
+                        row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str]
+                        writer.writerow(row)
+                        total_samples_written += 1
+
+            print(f"成功将 {total_samples_written} 条良性满足型 (B1) 样本写入: {output_path.resolve()}")
 
 
 def main():

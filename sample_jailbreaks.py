@@ -201,7 +201,7 @@ def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: i
 
 if __name__ == "__main__":
     # 修改 root 和 llm 名称即可
-    llm = "qwen_7b_chat"
+    llm = "vicuna_7b_v1_5"
 
     # 定义 behaviors csv 文件路径
     # 用户应将 'harmbench_behaviors_text_all.csv' 文件放在此处

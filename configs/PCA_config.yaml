@@ -5,7 +5,7 @@
 
 # 必须与 extraction_config.yaml 中的 `model_name` 的基本名称匹配。
 # 这用于在 `data_dir` 中定位正确的子目录。
-llm_name: "vicuna_7b_v1_5"
+llm_name: "qwen_7b_chat"
 
 # --- 路径配置 (相对于项目根目录 SARC/) ---
 # 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
@@ -32,5 +32,5 @@ pca:
 # (推荐) 减少干预向量和条件向量之间的相关性。
 decoupling:
   # 是否启用去耦合步骤。
-  enabled: false
+  enabled: True
 
