@@ -33,7 +33,7 @@ pca:
 # (推荐) 减少干预向量和条件向量之间的相关性。
 decoupling:
   # 是否启用去耦合步骤。
-  enabled: True
+  enabled: false
 
 # 可选的可视化配置
 visualization:

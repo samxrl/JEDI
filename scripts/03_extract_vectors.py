@@ -262,12 +262,14 @@ def plot_pca_visualizations(
         c_l = vectors[layer].get('c')
 
         if v_l is not None and torch.norm(v_l) > 0:
-            proj_v = pca.transform(v_l.numpy().reshape(1, -1))
+            # 修改点 1：使用主成分矩阵直接投影方向向量（不做 centering）
+            proj_v = (v_l.numpy().reshape(1, -1)) @ pca.components_.T
             ax.quiver(0, 0, proj_v[0, 0], proj_v[0, 1], color=vec_colors['v_vector'], scale=1, scale_units='xy', angles='xy', width=0.01,
                       label=r'$v_l$')
 
         if c_l is not None and torch.norm(c_l) > 0:
-            proj_c = pca.transform(c_l.numpy().reshape(1, -1))
+            # 修改点 1：使用主成分矩阵直接投影方向向量（不做 centering）
+            proj_c = (c_l.numpy().reshape(1, -1)) @ pca.components_.T
             ax.quiver(0, 0, proj_c[0, 0], proj_c[0, 1], color=vec_colors['c_vector'], scale=1, scale_units='xy', angles='xy', width=0.01,
                       label=r'$c_l$')
 
@@ -371,8 +373,11 @@ def main():
 
             if len(z_refusal_early) > 0 and len(z_compliance_early) > 0:
                 v = get_diff_vector(z_refusal_early, z_compliance_early)
-                if v @ z_refusal_early.mean(dim=0) < v @ z_compliance_early.mean(dim=0):
+
+                # 修改点 3: v 的符号校准
+                if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)):
                     v = -v
+
                 v_norm = torch.norm(v)
                 intervention_vectors[layer] = v / v_norm if v_norm > 0 else v
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
@@ -393,8 +398,11 @@ def main():
 
             if len(z_compliance_cont) > 0 and len(z_benign_cont) > 0:
                 c = get_diff_vector(z_compliance_cont, z_benign_cont)
-                if torch.norm(c) > 0 and (c @ z_compliance_cont.mean(dim=0) < c @ z_benign_cont.mean(dim=0)):
+
+                # 修改点 3: c 的符号校准
+                if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)):
                     c = -c
+
                 c_norm = torch.norm(c)
                 condition_vectors[layer] = c / c_norm if c_norm > 0 else c
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
@@ -412,7 +420,8 @@ def main():
                     norm_v = torch.norm(v_l_decoupled)
                     if norm_v > 0: intervention_vectors[layer] = v_l_decoupled / norm_v
 
-                    c_l_decoupled = c_l - (v_l @ c_l) * c_l
+                    # 修改点 2：修正去耦合公式
+                    c_l_decoupled = c_l - (v_l @ c_l) * v_l
                     norm_c = torch.norm(c_l_decoupled)
                     if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c
 
@@ -455,4 +464,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
