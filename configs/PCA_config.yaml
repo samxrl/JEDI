@@ -5,7 +5,7 @@
 
 # 必须与 extraction_config.yaml 中的 `model_name` 的基本名称匹配。
 # 这用于在 `data_dir` 中定位正确的子目录。
-llm_name: "qwen_7b_chat"
+llm_name: "vicuna_7b_v1_5"
 
 # --- 路径配置 (相对于项目根目录 SARC/) ---
 # 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
@@ -18,6 +18,7 @@ output_dir: "data/activations"
 whitening:
   # 在计算协方-差矩阵的逆时，为对角线添加一个小的正则化项。
   # 这可以防止由于矩阵奇异或接近奇异而导致的数值不稳定性。
+  enabled: true
   # 推荐值: 1e-5 到 1e-3
   epsilon: 0.0001
 
@@ -33,4 +34,9 @@ pca:
 decoupling:
   # 是否启用去耦合步骤。
   enabled: True
+
+# 可选的可视化配置
+visualization:
+  enabled: true  # 设置为 true 来生成并保存 PCA 图表
+  sample_size: 200 # 每类在图上绘制的最大点数
 

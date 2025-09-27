@@ -4,11 +4,11 @@
 # 该文件指定了要使用的模型、要处理的数据以及如何提取隐藏状态激活。
 
 # 此项必须与 data_prep_config.yaml 中使用的 'llm_name' 匹配，以找到正确的输入文件。
-dataset_llm_name: "qwen_7b_chat"
+dataset_llm_name: "vicuna_7b_v1_5"
 
 # 用于加载以提取激活的 Hugging Face 模型标识符。
 # 理想情况下，这应与 `dataset_llm_name` 是同一个模型。
-model_name: "../../../models/Qwen2-7B-Instruct"
+model_name: "../../../models/vicuna_7b_v1_5"
 model_kwargs:
   # 使用 "auto" 自动选择最佳数据类型（例如，在 Ampere 架构上为 bfloat16）。
   # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
@@ -54,5 +54,5 @@ processing:
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。
   # 设置为 null 或 0 来使用完整数据集。
-  sample_size: 0
+  sample_size: 200
 
