@@ -12,20 +12,22 @@
 2.  **过滤样本**:
     - 对于 "compliance" (A1) 数据，仅保留被标记为有害 (`label=='yes'`) 的样本。
     - 对于 "refusal" (A2) 数据，仅保留被标记为无害 (`label=='no'`) 的样本。
-3.  **双白化流程 (可选)**:
+3.  **平衡样本 (新增)**:
+    - 在提取向量前，通过随机下采样，确保用于计算差分的正负样本数量相等。
+4.  **双白化流程 (可选)**:
     - 根据配置决定是否启用白化。
     - **行为中心化/白化**: 使用良性 (B1) 数据集在“早期窗口”(`early_window`)的激活，计算均值和可选的白化矩阵 (W_matrix_early)。
     - **语义中心化/白化**: 使用良性 (B1) 数据集在“内容窗口”(`content_window`)的激活，计算均值和可选的白化矩阵 (W_matrix_cont)。
-4.  **提取干预向量 `v_l` (拒绝行为)**:
+5.  **提取干预向量 `v_l` (拒绝行为)**:
     - 对 A1 和 A2 样本在“早期窗口”的激活应用**行为变换**进行预处理。
     - 计算两组激活的均值差，提取表示“拒绝行为”的方向。
-5.  **提取条件向量 `c_l` (有害内容)**:
+6.  **提取条件向量 `c_l` (有害内容)**:
     - 对 A1 和 B1 样本在“内容窗口”的激活应用**语义变换**进行预处理。
     - 计算两组激活的均值差，提取区分“有害内容”与“良性内容”的方向。
-6.  **向量去耦合**:
+7.  **向量去耦合**:
     - 对 `v_l` 和 `c_l` 进行正交化处理，以减少它们之间的相关性。
-7.  将最终的变换矩阵、干预向量和条件向量保存到产物目录。
-8.  **(可选) 可视化**: 根据配置，生成并保存PCA降维后的激活分布散点图。
+8.  将最终的变换矩阵、干预向量和条件向量保存到产物目录。
+9.  **(可选) 可视化**: 根据配置，生成并保存PCA降维后的激活分布散点图。
 
 如何运行:
 python scripts/03_extract_vectors.py --config configs/PCA_config.yaml
@@ -167,6 +169,36 @@ def get_diff_vector(pos_activations: torch.Tensor, neg_activations: torch.Tensor
     return vector
 
 
+def balance_samples(pos_activations: torch.Tensor, neg_activations: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    通过对较大的集合进行随机下采样，来平衡正负激活样本的数量。
+    """
+    n_pos = pos_activations.shape[0]
+    n_neg = neg_activations.shape[0]
+
+    if n_pos == 0 or n_neg == 0:
+        # 如果任一集合为空，则无法平衡，直接返回
+        return pos_activations, neg_activations
+
+    if n_pos == n_neg:
+        # 如果数量已经相等，则无需操作
+        return pos_activations, neg_activations
+
+    min_samples = min(n_pos, n_neg)
+    logging.info(f"正在平衡样本: {n_pos} 个正样本 vs {n_neg} 个负样本。将下采样至每组 {min_samples} 个。")
+
+    if n_pos > min_samples:
+        # 对正样本进行下采样
+        indices = torch.randperm(n_pos)[:min_samples]
+        pos_activations = pos_activations[indices]
+    elif n_neg > min_samples:
+        # 对负样本进行下采样
+        indices = torch.randperm(n_neg)[:min_samples]
+        neg_activations = neg_activations[indices]
+
+    return pos_activations, neg_activations
+
+
 def plot_pca_visualizations(
         llm_name: str,
         window_name: str,
@@ -288,7 +320,6 @@ def plot_pca_visualizations(
                           scale=1, scale_units='xy', angles='xy', width=0.01,
                           label=r'$c_l$')
 
-
         ax.set_title(f"Layer {layer}")
 
     for j in range(i + 1, len(axes)):
@@ -322,6 +353,9 @@ def main():
         return
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+
+    pca_config = config.get('pca', {})
+    balance_samples_enabled = pca_config.get('balance_samples', True)
 
     # --- 2. 设置路径 ---
     base_dir = Path(__file__).parent.parent
@@ -388,7 +422,15 @@ def main():
             preprocessed_activations_for_plot['early_window'][layer]['benign'] = z_benign_early
 
             if len(z_refusal_early) > 0 and len(z_compliance_early) > 0:
-                v = get_diff_vector(z_refusal_early, z_compliance_early)
+                # --- 新增：平衡 v_l 的正负样本 ---
+                z_refusal_for_v = z_refusal_early
+                z_compliance_for_v = z_compliance_early
+                if balance_samples_enabled:
+                    z_refusal_for_v, z_compliance_for_v = balance_samples(
+                        z_refusal_early, z_compliance_early
+                    )
+
+                v = get_diff_vector(z_refusal_for_v, z_compliance_for_v)
 
                 # 修改点 3: v 的符号校准
                 if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)):
@@ -413,7 +455,14 @@ def main():
             preprocessed_activations_for_plot['content_window'][layer]['refusal'] = z_refusal_cont
 
             if len(z_compliance_cont) > 0 and len(z_benign_cont) > 0:
-                c = get_diff_vector(z_compliance_cont, z_benign_cont)
+                # --- 新增：平衡 c_l 的正负样本 ---
+                z_compliance_for_c = z_compliance_cont
+                z_benign_for_c = z_benign_cont
+                if balance_samples_enabled:
+                    z_compliance_for_c, z_benign_for_c = balance_samples(
+                        z_compliance_cont, z_benign_cont
+                    )
+                c = get_diff_vector(z_compliance_for_c, z_benign_for_c)
 
                 # 修改点 3: c 的符号校准
                 if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)):
@@ -460,7 +509,7 @@ def main():
             layers=layers,
             activations=preprocessed_activations_for_plot['early_window'],
             vectors=all_vectors_for_plot,
-            output_dir=output_dir, # 保存到与产物相同的目录
+            output_dir=output_dir,  # 保存到与产物相同的目录
             whitening_enabled=whitening_enabled,
             sample_size=vis_config.get('sample_size', 200)
         )
@@ -470,7 +519,7 @@ def main():
             layers=layers,
             activations=preprocessed_activations_for_plot['content_window'],
             vectors=all_vectors_for_plot,
-            output_dir=output_dir, # 保存到与产物相同的目录
+            output_dir=output_dir,  # 保存到与产物相同的目录
             whitening_enabled=whitening_enabled,
             sample_size=vis_config.get('sample_size', 200)
         )
@@ -480,4 +529,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -18,13 +18,16 @@ output_dir: "data/activations"
 whitening:
   # 在计算协方-差矩阵的逆时，为对角线添加一个小的正则化项。
   # 这可以防止由于矩阵奇异或接近奇异而导致的数值不稳定性。
-  enabled: false
+  enabled: true
   # 推荐值: 1e-5 到 1e-3
   epsilon: 0.0001
 
 # --- PCA 参数 ---
 # 用于从激活差异中提取方向向量。
 pca:
+  # 在提取方向向量之前，通过随机下采样来平衡正负样本的数量。
+  # 这有助于防止因样本数量不平衡而导致的偏差。
+  balance_samples: true
   # 要提取的主成分数量。对于我们的目的，我们只关心最重要的方向，
   # 因此设置为 1。
   n_components: 1
@@ -33,10 +36,9 @@ pca:
 # (推荐) 减少干预向量和条件向量之间的相关性。
 decoupling:
   # 是否启用去耦合步骤。
-  enabled: false
+  enabled: true
 
 # 可选的可视化配置
 visualization:
   enabled: true  # 设置为 true 来生成并保存 PCA 图表
   sample_size: 200 # 每类在图上绘制的最大点数
-
