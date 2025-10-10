@@ -3,17 +3,19 @@
 脚本 02: 提取模型激活
 
 该脚本遵循“方法流程.md”文档中的第二阶段，负责从语言模型中提取隐藏状态（激活）。
-此版本已更新，以支持双白化流程：
+此版本已更新，以支持双白化流程，并同时保存两种类型的激活：
 
 主要功能:
 1.  加载由 `01_prepare_datasets.py` 生成的结构化数据集 (A1-满足, A2-拒绝, B1-良性满足)。
-    注意：B1 样本现在也包含“满足”前缀，结构与 A1 一致。
-2.  按 'prompt' 对数据进行分组，确保每个批次内的样本共享相同的前序提示以优化性能。
+2.  按 'prompt' 对数据进行分组，以优化性能。
 3.  对于每个批次，从头构建完整的对话模板并将其输入模型。
-4.  为所有样本类型 (A1, A2, B1) 提取并聚合两类激活窗口：
-    - “早期窗口” (early_window): 对应于前缀部分的隐藏态，用于后续计算“行为”白化矩阵。
-    - “内容窗口” (content_window): 对应于新生成内容部分的隐藏态，用于后续计算“语义”白化矩阵。
-5.  将聚合后的激活张量保存到文件，同时将模型的自然语言输出保存到单独的 CSV 文件。
+4.  为所有样本类型 (A1, A2, B1) 提取并保存两类激活窗口：
+    - “早期窗口” (early_window): 对应于前缀部分的隐藏态。
+    - “内容窗口” (content_window): 对应于新生成内容部分的隐藏态。
+5.  **修改点**: 对于每个窗口，同时保存两种形式的激活：
+    - `aggregated`: 根据配置（如 'mean' 或 'last'）聚合后的单个向量。
+    - `per_token`: 窗口内每个 token 的原始隐藏状态序列。
+6.  将包含上述结构的激活字典保存到 .pt 文件，并将模型的自然语言输出保存到单独的 CSV 文件。
 
 如何运行:
 python scripts/02_extract_activations.py --config configs/extraction_config.yaml
@@ -133,25 +135,22 @@ def process_batch(
 ):
     """
     处理一个批次的数据以提取激活。
-    此版本采用统一的处理流程，因为所有输入数据集 (A1, A2, B1) 现在都具有相同的结构。
+    此版本返回一个包含 'aggregated' 和 'per_token' 两种激活的字典。
     """
     current_batch_size = len(batch_df)
     conversations = [json.loads(conv_str) for conv_str in batch_df['conversation']]
 
     # --- 统一构建输入文本 ---
-    # 对所有数据集应用完整的对话模板，然后移除末尾的 EOS 标记，以准备生成。
     full_input_texts = []
     for conv in conversations:
         text = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
         if tokenizer.eos_token:
-            text = text.rstrip()  # 移除末尾空白
+            text = text.rstrip()
             if text.endswith(tokenizer.eos_token):
                 text = text[:-len(tokenizer.eos_token)]
         full_input_texts.append(text)
 
-    # 对最终的文本输入进行分词
     inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    # 获取批次内所有输入序列填充后的统一长度。这是新内容开始生成的起点。
     padded_prompt_len = inputs['input_ids'].shape[1]
 
     with torch.no_grad():
@@ -165,25 +164,19 @@ def process_batch(
 
         # --- 解码和索引查找 ---
         assistant_outputs = []
-        prefix_start_indices = [-1] * current_batch_size  # 存储索引以供重用
+        prefix_start_indices = [-1] * current_batch_size
 
-        # 对所有样本应用统一的解码逻辑
         for i in range(current_batch_size):
             prefix_text = conversations[i][1]['content']
             prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
-
-            # 在输入的 token ID 中搜索前缀的 token ID
             prompt_ids_list = inputs['input_ids'][i].tolist()
             start_idx = find_subsequence(prompt_ids_list, prefix_ids)
-
             if start_idx != -1:
                 prefix_start_indices[i] = start_idx
-                # 从找到的精确位置开始解码，得到 "前缀 + 生成内容"
                 tokens_to_decode = generated_sequences[i, start_idx:]
                 output_text = tokenizer.decode(tokens_to_decode, skip_special_tokens=True)
                 assistant_outputs.append(output_text)
             else:
-                # 如果未找到前缀 token（不太可能发生，但作为保障），则回退
                 logging.warning(f"无法为样本 {i} 定位前缀 token。回退到基于长度的解码。")
                 decoded_new_part = tokenizer.decode(generated_sequences[i, padded_prompt_len:], skip_special_tokens=True)
                 assistant_outputs.append(prefix_text + decoded_new_part)
@@ -192,30 +185,33 @@ def process_batch(
         full_outputs = model(generated_sequences, output_hidden_states=True)
         all_hidden_states = [h.cpu() for h in full_outputs.hidden_states]
 
-    batch_activations = {layer: {'early_window': [], 'content_window': []} for layer in extraction_config['layers']}
+    # --- MODIFICATION START: 初始化新的激活数据结构 ---
+    batch_activations = {
+        layer: {
+            'early_window': {'aggregated': [], 'per_token': []},
+            'content_window': {'aggregated': [], 'per_token': []}
+        } for layer in extraction_config['layers']
+    }
+    # --- MODIFICATION END ---
 
     # --- 提取激活 ---
     for layer_idx in extraction_config['layers']:
         layer_hidden_states = all_hidden_states[layer_idx]
 
-        # 提取内容窗口 (content_window) 的激活
-        # 对于左填充，所有新 token 都在 padded_prompt_len 之后开始，因此可以进行批处理
+        # --- MODIFICATION START: 提取并存储两种类型的 'content_window' 激活 ---
         content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
-
-        # 批量聚合内容窗口
-        agg_content_batch = None
         if content_window_states.shape[1] > 0:
+            # 存储逐 token 激活 (整个批次)
+            batch_activations[layer_idx]['content_window']['per_token'].append(content_window_states.cpu())
+            # 存储聚合后激活 (整个批次)
             agg_content_batch = aggregate_activations(content_window_states, extraction_config['aggregation'])
+            batch_activations[layer_idx]['content_window']['aggregated'].append(agg_content_batch.cpu())
+        # --- MODIFICATION END ---
 
         for i in range(current_batch_size):
-            # 添加当前样本的内容窗口激活
-            if agg_content_batch is not None:
-                batch_activations[layer_idx]['content_window'].append(agg_content_batch[i].unsqueeze(0).cpu())
-
-            # 为所有样本提取早期窗口 (early_window)
             prefix_start_idx = prefix_start_indices[i]
             if prefix_start_idx == -1:
-                continue  # 如果之前未找到，则跳过
+                continue
 
             prefix_text = conversations[i][1]['content']
             prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
@@ -223,10 +219,15 @@ def process_batch(
 
             if prefix_len > 0:
                 prefix_end_idx = prefix_start_idx + prefix_len
-                # `find_subsequence` 确保了前缀索引在有效的、非填充的 token 区域内。
                 early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
+
+                # --- MODIFICATION START: 提取并存储两种类型的 'early_window' 激活 ---
+                # 存储逐 token 激活 (单个样本)
+                batch_activations[layer_idx]['early_window']['per_token'].append(early_window_slice.squeeze(0).cpu())
+                # 存储聚合后激活 (单个样本)
                 agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
-                batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
+                batch_activations[layer_idx]['early_window']['aggregated'].append(agg_early.cpu())
+                # --- MODIFICATION END ---
 
     return batch_activations, assistant_outputs
 
@@ -251,19 +252,13 @@ def main():
     # --- 2. 设置路径和加载模型 ---
     base_dir = Path(__file__).parent.parent
     processed_data_dir = base_dir / config['processed_data_dir']
-
-    # 从配置中获取模型名称，并创建特定于模型的输出目录
     llm_name = config['model_name'].split('/')[-1]
     output_dir = base_dir / config['output_dir'] / llm_name
     output_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"所有激活和输出文件将保存到: {output_dir}")
-
     dataset_llm_name = config['dataset_llm_name']
-
     model, tokenizer, model_config_details = get_model_and_tokenizer(config['model_name'], config.get('model_kwargs', {}),
                                                                      config['processing']['device'])
-
-    # 验证请求的层是否存在于模型中
     num_hidden_layers = getattr(model_config_details, 'num_hidden_layers', float('inf'))
     requested_layers = config['extraction']['layers']
     valid_layers = [l for l in requested_layers if 0 <= l < num_hidden_layers]
@@ -272,11 +267,7 @@ def main():
         return
     config['extraction']['layers'] = valid_layers
     logging.info(f"将从以下层提取激活: {valid_layers}")
-
-    # 从配置中获取 sample_size
     sample_size = config.get('processing', {}).get('sample_size', 0)
-
-    # 定义要处理的数据集 (已更新 benign 数据集路径)
     datasets_to_process = {
         "compliance": processed_data_dir / f"{dataset_llm_name}_jailbreak_compliance.csv",
         "refusal": processed_data_dir / f"{dataset_llm_name}_jailbreak_refusal.csv",
@@ -285,7 +276,6 @@ def main():
 
     # --- 3. 遍历并处理每个数据集 ---
     for name, path in datasets_to_process.items():
-
         if not path.is_file():
             logging.warning(f"未找到 '{name}' 的数据集文件，路径: {path}，正在跳过。")
             continue
@@ -293,20 +283,22 @@ def main():
         logging.info(f"--- 正在处理数据集: {name} ---")
         df = pd.read_csv(path)
 
-        # 如果在配置中指定了 sample_size，则对数据集进行随机采样
         if sample_size > 0 and sample_size < len(df):
             logging.info(f"数据集 '{name}' 包含 {len(df)} 个样本。正在根据配置随机采样 {sample_size} 个样本...")
             df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
 
-        total_activations = {layer: {'early_window': [], 'content_window': []} for layer in config['extraction']['layers']}
+        # --- MODIFICATION START: 初始化新的总激活数据结构 ---
+        total_activations = {
+            layer: {
+                'early_window': {'aggregated': [], 'per_token': []},
+                'content_window': {'aggregated': [], 'per_token': []}
+            } for layer in config['extraction']['layers']
+        }
+        # --- MODIFICATION END ---
+
         all_outputs_for_csv = []
         batch_size = config['processing']['batch_size']
-
-        # 判断是否应该使用基于 prompt 分组的优化
-        # 对所有具有 'prompt' 列的数据集启用分组
         use_grouping = 'prompt' in df.columns
-
-        # 按 'prompt' 分组，如果不需要分组则创建一个包含所有数据的伪分组
         grouped = df.groupby('prompt') if use_grouping else [('all', df)]
         progress_bar = tqdm(total=len(df), desc=f"正在提取 {name}")
 
@@ -315,41 +307,34 @@ def main():
             # --- 5. 在分组内按批次处理 ---
             for i in range(0, len(group_df), batch_size):
                 batch_df = group_df.iloc[i:i + batch_size]
-
-                # 调用核心处理函数
                 batch_activations, assistant_outputs = process_batch(
                     batch_df, model, tokenizer,
                     config['generation'], config['extraction'], config['processing']['device']
                 )
 
-                # 准备要写入 CSV 的数据
                 for idx, assistant_text in enumerate(assistant_outputs):
                     original_row = batch_df.iloc[idx]
-                    output_record = {
-                        'prompt': original_row['prompt'],
-                        'assistant_output': assistant_text
-                    }
-                    # 确保所有可能的列都被保留
-                    if 'prefix' in original_row:
-                        output_record['prefix'] = original_row['prefix']
-                    if 'behavior' in original_row:
-                        output_record['behavior'] = original_row['behavior']
-                    if 'FunctionalCategory' in original_row:
-                        output_record['FunctionalCategory'] = original_row['FunctionalCategory']
-                    if 'ContextString' in original_row:
-                        output_record['ContextString'] = original_row['ContextString']
-                    if 'source' in original_row:
-                        output_record['source'] = original_row['source']
+                    output_record = {'prompt': original_row['prompt'], 'assistant_output': assistant_text}
+                    for col in ['prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'source']:
+                        if col in original_row:
+                            output_record[col] = original_row[col]
                     all_outputs_for_csv.append(output_record)
 
-                # 收集当前批次的结果
+                # --- MODIFICATION START: 收集批次结果到总激活字典 ---
                 for layer_idx, windows in batch_activations.items():
-                    if windows['early_window']: total_activations[layer_idx]['early_window'].extend(windows['early_window'])
-                    if windows['content_window']: total_activations[layer_idx]['content_window'].extend(windows['content_window'])
+                    # early_window 的结果是列表，直接扩展
+                    if windows['early_window']['aggregated']:
+                        total_activations[layer_idx]['early_window']['aggregated'].extend(windows['early_window']['aggregated'])
+                    if windows['early_window']['per_token']:
+                        total_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
+                    # content_window 的结果是批次张量，直接追加
+                    if windows['content_window']['aggregated']:
+                        total_activations[layer_idx]['content_window']['aggregated'].extend(windows['content_window']['aggregated'])
+                    if windows['content_window']['per_token']:
+                        total_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
+                # --- MODIFICATION END ---
 
                 progress_bar.update(len(batch_df))
-
-                # 清理缓存和垃圾回收
                 del batch_activations, assistant_outputs
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -358,14 +343,35 @@ def main():
         progress_bar.close()
 
         # --- 6. 聚合结果并保存 ---
-        # 保存激活 .pt 文件
+        # --- MODIFICATION START: 构建最终要保存的嵌套字典 ---
         final_tensors = {}
         for layer_idx, windows in total_activations.items():
             final_tensors[layer_idx] = {}
-            if windows['early_window']:
-                final_tensors[layer_idx]['early_window'] = torch.cat(windows['early_window'], dim=0)
-            if windows['content_window']:
-                final_tensors[layer_idx]['content_window'] = torch.cat(windows['content_window'], dim=0)
+            # -- 处理 early_window --
+            final_tensors[layer_idx]['early_window'] = {}
+            if windows['early_window']['aggregated']:
+                final_tensors[layer_idx]['early_window']['aggregated'] = torch.cat(windows['early_window']['aggregated'], dim=0)
+            # per_token 激活由于长度不一，作为张量列表保存
+            if windows['early_window']['per_token']:
+                final_tensors[layer_idx]['early_window']['per_token'] = windows['early_window']['per_token']
+
+            # -- 处理 content_window --
+            final_tensors[layer_idx]['content_window'] = {}
+            if windows['content_window']['aggregated']:
+                final_tensors[layer_idx]['content_window']['aggregated'] = torch.cat(windows['content_window']['aggregated'], dim=0)
+
+            # FIX: The assumption that all content windows have the same length across batches is incorrect,
+            # as generation can stop early (e.g., EOS token). This was causing the RuntimeError.
+            # We now save it as a list of tensors, just like with the early_window.
+            # First, we flatten the list of batch tensors into a single list of sample-level tensors.
+            if windows['content_window']['per_token']:
+                flat_per_token_list = [
+                    sample_tensor.clone()  # clone to ensure memory is contiguous
+                    for batch_tensor in windows['content_window']['per_token']
+                    for sample_tensor in torch.unbind(batch_tensor, dim=0)
+                ]
+                final_tensors[layer_idx]['content_window']['per_token'] = flat_per_token_list
+        # --- MODIFICATION END ---
 
         output_path = output_dir / f"{llm_name}_{name}_activations.pt"
         torch.save(final_tensors, output_path)
@@ -374,19 +380,13 @@ def main():
         # 保存自然语言输出 .csv 文件
         if all_outputs_for_csv:
             output_df = pd.DataFrame(all_outputs_for_csv)
-
             if name == "benign":
-                # 对于良性样本，保留 source 列
                 cols_order = ['prompt', 'prefix', 'assistant_output', 'source']
-                final_cols = [col for col in cols_order if col in output_df.columns]
-                output_df = output_df[final_cols]
             else:
-                # 对于 compliance 和 refusal 样本，添加 label 列以供 02.5 判断
                 output_df['label'] = None
                 cols_order = ['prompt', 'prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'assistant_output', 'label']
-                final_cols = [col for col in cols_order if col in output_df.columns]
-                output_df = output_df[final_cols]
-
+            final_cols = [col for col in cols_order if col in output_df.columns]
+            output_df = output_df[final_cols]
             output_csv_path = output_dir / f"{llm_name}_{name}_outputs.csv"
             output_df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
             logging.info(f"成功将 '{name}' 的自然语言输出保存到 {output_csv_path}")
@@ -396,3 +396,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

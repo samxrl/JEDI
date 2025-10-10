@@ -1,0 +1,44 @@
+# SARC/configs/calibration_config.yaml
+#
+# 04_calibrate_defense.py 脚本的配置文件。
+# 用于校准在线防御所需的各种参数。
+
+# 必须与 03_extract_vectors.py 中使用的 `llm_name` 匹配，
+# 以便在 `artifacts_dir` 和 `activations_dir` 中找到正确的子目录。
+llm_name: "vicuna_7b_v1_5"
+
+# --- 路径配置 (相对于项目根目录 SARC/) ---
+# 包含由 03_extract_vectors.py 生成的向量和变换矩阵的目录。
+# 校准后的 defense_config.json 也将保存于此。
+artifacts_dir: "data/activations"
+# 包含由 02_extract_activations.py 生成的激活文件的目录。
+activations_dir: "data/activations"
+
+# --- 校准参数 ---
+calibration_params:
+  # 用于计算边界阈值 theta 的分位数。
+  # 直观上，这意味着在良性样本中，只有 (1 - quantile)% 的情况会产生非零的初始分数。
+  # 推荐值: 0.90 到 0.98
+  theta_quantile: 0.95
+
+  # 校准 CUSUM 参数时，我们旨在找到满足此误报率 (FPR) 约束的最佳组合。
+  # 例如, 0.01 表示我们最多能容忍 1% 的良性样本被错误地标记为有害。
+  target_fpr: 0.01
+
+  # 在 CUSUM 模拟中，用于代表单个样本的恒定风险序列的长度。
+  # 这简化了校准过程，因为我们没有逐 token 的激活。
+  # 值越大，对参数 h 和 k 的微小差异越敏感。
+  cusum_simulation_length: 50
+
+# --- CUSUM 参数扫描网格 ---
+# 定义了用于寻找最优 h (报警阈值) 和 k (容忍带) 的搜索空间。
+# 网格越精细，搜索时间越长，但结果可能更优。
+cusum_param_grid:
+  # h (报警阈值) 的范围和步长
+  h_min: 0.1
+  h_max: 2.0
+  h_step: 0.05
+  # k (容忍带) 的范围和步长
+  k_min: 0.01
+  k_max: 0.5
+  k_step: 0.01

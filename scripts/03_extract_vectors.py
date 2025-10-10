@@ -4,7 +4,8 @@
 
 该脚本遵循“方法流程.md”文档中的第二和第三阶段，负责计算和提取
 干预向量 (intervention vectors) 和条件向量 (condition vectors)。
-此版本实现了双白化流程，分别处理行为和语义表征。
+此版本已更新，以兼容包含聚合后 (`aggregated`) 和逐 token (`per_token`)
+激活的新数据格式，并仅使用聚合后的激活进行向量提取。
 
 主要功能:
 1.  加载由 `02_extract_activations.py` 提取的激活，以及由 `02.5_judge_harmfulness.py`
@@ -12,22 +13,15 @@
 2.  **过滤样本**:
     - 对于 "compliance" (A1) 数据，仅保留被标记为有害 (`label=='yes'`) 的样本。
     - 对于 "refusal" (A2) 数据，仅保留被标记为无害 (`label=='no'`) 的样本。
-3.  **平衡样本 (新增)**:
-    - 在提取向量前，通过随机下采样，确保用于计算差分的正负样本数量相等。
-4.  **双白化流程 (可选)**:
-    - 根据配置决定是否启用白化。
-    - **行为中心化/白化**: 使用良性 (B1) 数据集在“早期窗口”(`early_window`)的激活，计算均值和可选的白化矩阵 (W_matrix_early)。
-    - **语义中心化/白化**: 使用良性 (B1) 数据集在“内容窗口”(`content_window`)的激活，计算均值和可选的白化矩阵 (W_matrix_cont)。
+3.  **平衡样本**: 在计算差分向量前，通过随机下采样确保正负样本数量一致。
+4.  **双白化流程**:
+    - 使用良性 (B1) 数据集的聚合后激活，为“早期窗口”和“内容窗口”分别计算变换（中心化/白化）。
 5.  **提取干预向量 `v_l` (拒绝行为)**:
-    - 对 A1 和 A2 样本在“早期窗口”的激活应用**行为变换**进行预处理。
-    - 计算两组激活的均值差，提取表示“拒绝行为”的方向。
+    - 对平衡后的 A1 和 A2 样本在“早期窗口”的聚合后激活应用**行为变换**，并计算均值差。
 6.  **提取条件向量 `c_l` (有害内容)**:
-    - 对 A1 和 B1 样本在“内容窗口”的激活应用**语义变换**进行预处理。
-    - 计算两组激活的均值差，提取区分“有害内容”与“良性内容”的方向。
-7.  **向量去耦合**:
-    - 对 `v_l` 和 `c_l` 进行正交化处理，以减少它们之间的相关性。
+    - 对平衡后的 A1 和 B1 样本在“内容窗口”的聚合后激活应用**语义变换**，并计算均值差。
+7.  **(可选) 向量去耦合** 和 **可视化**。
 8.  将最终的变换矩阵、干预向量和条件向量保存到产物目录。
-9.  **(可选) 可视化**: 根据配置，生成并保存PCA降维后的激活分布散点图。
 
 如何运行:
 python scripts/03_extract_vectors.py --config configs/PCA_config.yaml
@@ -52,6 +46,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tuple[dict, pd.DataFrame]:
     """
     加载激活张量和对应的带标签的 CSV 文件，并根据标签进行过滤。
+    此版本适配新的数据结构，仅提取 'aggregated' 激活。
     """
     activations_path = data_dir / f"{llm_name}_{dataset_name}_activations.pt"
     outputs_path = data_dir / f"{llm_name}_{dataset_name}_outputs.csv"
@@ -61,7 +56,7 @@ def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tu
         return None, None
 
     logging.info(f"正在加载 {dataset_name} 数据...")
-    activations = torch.load(activations_path)
+    activations = torch.load(activations_path, map_location='cpu')
     df = pd.read_csv(outputs_path)
 
     if dataset_name == "compliance":
@@ -69,24 +64,37 @@ def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tu
     elif dataset_name == "refusal":
         target_label = "no"
     else:  # benign
-        return activations, df
+        # 对于良性数据，我们不需要过滤，但仍需提取 aggregated 部分
+        aggregated_activations = {}
+        for layer, windows in activations.items():
+            aggregated_activations[layer] = {}
+            for window_name, data in windows.items():
+                if 'aggregated' in data:
+                    aggregated_activations[layer][window_name] = data['aggregated']
+        return aggregated_activations, df
 
-    # 过滤掉标签为空或不匹配的行
+    # --- 对 compliance 和 refusal 数据进行过滤 ---
     initial_count = len(df)
     df.dropna(subset=['label'], inplace=True)
     valid_indices = df.index[df['label'] == target_label].tolist()
 
     df_filtered = df.loc[valid_indices].reset_index(drop=True)
 
-    # 过滤激活张量
     activations_filtered = {}
     for layer, windows in activations.items():
         activations_filtered[layer] = {}
-        for window_name, tensor in windows.items():
+        for window_name, data in windows.items():
+            # 仅提取 'aggregated' 张量进行处理
+            tensor = data.get('aggregated')
+            if tensor is None:
+                logging.warning(f"在 L{layer}/{window_name} 中未找到 'aggregated' 键，跳过。")
+                continue
+
             if tensor.shape[0] != initial_count:
                 logging.warning(
                     f"在 {dataset_name} (L{layer}, {window_name}) 中，激活数量 ({tensor.shape[0]}) 与CSV行数 ({initial_count}) 不匹配。跳过此张量。")
                 continue
+
             activations_filtered[layer][window_name] = tensor[valid_indices]
 
     logging.info(f"对于 {dataset_name}，从 {initial_count} 个样本中过滤出 {len(df_filtered)} 个标签为 '{target_label}' 的样本。")
@@ -169,36 +177,6 @@ def get_diff_vector(pos_activations: torch.Tensor, neg_activations: torch.Tensor
     return vector
 
 
-def balance_samples(pos_activations: torch.Tensor, neg_activations: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    通过对较大的集合进行随机下采样，来平衡正负激活样本的数量。
-    """
-    n_pos = pos_activations.shape[0]
-    n_neg = neg_activations.shape[0]
-
-    if n_pos == 0 or n_neg == 0:
-        # 如果任一集合为空，则无法平衡，直接返回
-        return pos_activations, neg_activations
-
-    if n_pos == n_neg:
-        # 如果数量已经相等，则无需操作
-        return pos_activations, neg_activations
-
-    min_samples = min(n_pos, n_neg)
-    logging.info(f"正在平衡样本: {n_pos} 个正样本 vs {n_neg} 个负样本。将下采样至每组 {min_samples} 个。")
-
-    if n_pos > min_samples:
-        # 对正样本进行下采样
-        indices = torch.randperm(n_pos)[:min_samples]
-        pos_activations = pos_activations[indices]
-    elif n_neg > min_samples:
-        # 对负样本进行下采样
-        indices = torch.randperm(n_neg)[:min_samples]
-        neg_activations = neg_activations[indices]
-
-    return pos_activations, neg_activations
-
-
 def plot_pca_visualizations(
         llm_name: str,
         window_name: str,
@@ -242,83 +220,53 @@ def plot_pca_visualizations(
         plot_colors = {}
 
         if window_name == 'early_window':
-            # 早期窗口 (行为): 对比 Compliance 和 Refusal
-            if z_compliance is not None and len(z_compliance) > 0:
-                data_to_plot['Compliance'] = z_compliance
-            if z_refusal is not None and len(z_refusal) > 0:
-                data_to_plot['Refusal'] = z_refusal
+            if z_compliance is not None and len(z_compliance) > 0: data_to_plot['Compliance'] = z_compliance
+            if z_refusal is not None and len(z_refusal) > 0: data_to_plot['Refusal'] = z_refusal
         elif window_name == 'content_window':
-            # 内容窗口 (语义): 对比 Compliance 和 Benign
-            if z_compliance is not None and len(z_compliance) > 0:
-                data_to_plot['Compliance'] = z_compliance
-            if z_benign is not None and len(z_benign) > 0:
-                data_to_plot['Benign'] = z_benign
+            if z_compliance is not None and len(z_compliance) > 0: data_to_plot['Compliance'] = z_compliance
+            if z_benign is not None and len(z_benign) > 0: data_to_plot['Benign'] = z_benign
 
-        # 检查是否有至少两个类别用于对比
         if len(data_to_plot) < 2:
-            logging.warning(f"在第 {layer} 层 ('{window_name}') 数据不足 (少于两个类别)，无法生成图表。")
+            logging.warning(f"在第 {layer} 层 ('{window_name}') 数据不足，无法生成图表。")
             ax.text(0.5, 0.5, f'Layer {layer}\nInsufficient Data', ha='center', va='center', fontsize=9)
-            ax.set_xticks([])
+            ax.set_xticks([]);
             ax.set_yticks([])
             continue
 
-        # 平衡并采样数据
         min_samples = min(len(v) for v in data_to_plot.values())
         plot_sample_size = min(sample_size, min_samples) if sample_size > 0 else min_samples
-
-        sampled_data = {
-            k: v[torch.randperm(v.size(0))[:plot_sample_size]]
-            for k, v in data_to_plot.items()
-        }
-
-        # 合并数据并运行 PCA
+        sampled_data = {k: v[torch.randperm(v.size(0))[:plot_sample_size]] for k, v in data_to_plot.items()}
         all_preprocessed = torch.cat(list(sampled_data.values()), dim=0)
+
         pca = PCA(n_components=2)
         pca.fit(all_preprocessed.numpy())
 
-        # 变换数据到二维空间
-        proj_dfs = []
-        for category, tensor in sampled_data.items():
-            df = pd.DataFrame(pca.transform(tensor.numpy()), columns=['PC1', 'PC2']).assign(Category=category)
-            proj_dfs.append(df)
-
+        proj_dfs = [pd.DataFrame(pca.transform(t.numpy()), columns=['PC1', 'PC2']).assign(Category=c) for c, t in sampled_data.items()]
         proj_df = pd.concat(proj_dfs, ignore_index=True)
 
-        # 使用与类别匹配的颜色进行绘图
         current_plot_colors = {k: all_colors[k] for k in data_to_plot.keys()}
         sns.scatterplot(data=proj_df, x='PC1', y='PC2', hue='Category', palette=current_plot_colors, ax=ax, alpha=0.7, s=20)
         ax.get_legend().remove()
 
-        # 绘制向量
         v_l = vectors[layer].get('v')
         c_l = vectors[layer].get('c')
-
-        # 获取坐标轴范围以确定箭头缩放比例
-        xlim = ax.get_xlim()
-        axis_width = xlim[1] - xlim[0]
-        arrow_length = axis_width * 0.3  # 箭头长度为坐标轴宽度的30%
+        axis_width = ax.get_xlim()[1] - ax.get_xlim()[0]
+        arrow_length = axis_width * 0.3
 
         if v_l is not None and torch.norm(v_l) > 0:
-            # 使用主成分矩阵直接投影方向向量（不做 centering）
             proj_v = (v_l.numpy().reshape(1, -1)) @ pca.components_.T
-            # 归一化投影后的二维向量
             proj_v_norm = np.linalg.norm(proj_v)
             if proj_v_norm > 1e-9:
                 scaled_proj_v = (proj_v / proj_v_norm) * arrow_length
-                ax.quiver(0, 0, scaled_proj_v[0, 0], scaled_proj_v[0, 1], color=vec_colors['v_vector'],
-                          scale=1, scale_units='xy', angles='xy', width=0.01,
-                          label=r'$v_l$')
-
+                ax.quiver(0, 0, scaled_proj_v[0, 0], scaled_proj_v[0, 1], color=vec_colors['v_vector'], scale=1, scale_units='xy', angles='xy',
+                          width=0.01, label=r'$v_l$')
         if c_l is not None and torch.norm(c_l) > 0:
-            # 使用主成分矩阵直接投影方向向量（不做 centering）
             proj_c = (c_l.numpy().reshape(1, -1)) @ pca.components_.T
-            # 归一化投影后的二维向量
             proj_c_norm = np.linalg.norm(proj_c)
             if proj_c_norm > 1e-9:
                 scaled_proj_c = (proj_c / proj_c_norm) * arrow_length
-                ax.quiver(0, 0, scaled_proj_c[0, 0], scaled_proj_c[0, 1], color=vec_colors['c_vector'],
-                          scale=1, scale_units='xy', angles='xy', width=0.01,
-                          label=r'$c_l$')
+                ax.quiver(0, 0, scaled_proj_c[0, 0], scaled_proj_c[0, 1], color=vec_colors['c_vector'], scale=1, scale_units='xy', angles='xy',
+                          width=0.01, label=r'$c_l$')
 
         ax.set_title(f"Layer {layer}")
 
@@ -346,7 +294,6 @@ def main():
                         help='向量提取阶段的 YAML 配置文件路径。')
     args = parser.parse_args()
 
-    # --- 1. 加载配置 ---
     config_path = Path(args.config)
     if not config_path.is_file():
         logging.error(f"配置文件未找到: {config_path}")
@@ -354,10 +301,6 @@ def main():
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
-    pca_config = config.get('pca', {})
-    balance_samples_enabled = pca_config.get('balance_samples', True)
-
-    # --- 2. 设置路径 ---
     base_dir = Path(__file__).parent.parent
     llm_name = config['llm_name']
     data_dir = base_dir / config['data_dir'] / llm_name
@@ -365,7 +308,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"所有产物将保存到: {output_dir}")
 
-    # --- 3. 加载并过滤数据 ---
     compliance_activations, _ = load_and_filter_data(data_dir, llm_name, "compliance")
     refusal_activations, _ = load_and_filter_data(data_dir, llm_name, "refusal")
     benign_activations, _ = load_and_filter_data(data_dir, llm_name, "benign")
@@ -374,7 +316,6 @@ def main():
         logging.error("缺少必要的数据集，无法继续。请先运行 02 和 02.5 脚本。")
         return
 
-    # --- 4. 计算变换 (中心化 + 可选白化) ---
     whitening_config = config.get('whitening', {})
     whitening_enabled = whitening_config.get('enabled', True)
     transforms_early, transforms_cont = calculate_dual_transforms(
@@ -392,12 +333,14 @@ def main():
     intervention_vectors, condition_vectors = {}, {}
     layers = sorted(list(benign_activations.keys()))
 
-    # 存储预处理后的激活以供绘图使用
     preprocessed_activations_for_plot = {
         'early_window': {layer: {} for layer in layers},
         'content_window': {layer: {} for layer in layers}
     }
     all_vectors_for_plot = {layer: {} for layer in layers}
+
+    # --- 在循环外只记录一次平衡信息 ---
+    log_balancing_info = True
 
     for layer in tqdm(layers, desc="提取向量"):
         transform_early = transforms_early.get(layer)
@@ -407,7 +350,7 @@ def main():
             logging.warning(f"第 {layer} 层缺少变换矩阵，跳过向量提取。")
             continue
 
-        # --- 5. 提取干预向量 v_l (拒绝行为) ---
+        # --- 提取干预向量 v_l (拒绝行为) ---
         H_refusal_early = refusal_activations.get(layer, {}).get('early_window')
         H_compliance_early = compliance_activations.get(layer, {}).get('early_window')
         H_benign_early = benign_activations.get(layer, {}).get('early_window')
@@ -422,25 +365,27 @@ def main():
             preprocessed_activations_for_plot['early_window'][layer]['benign'] = z_benign_early
 
             if len(z_refusal_early) > 0 and len(z_compliance_early) > 0:
-                # --- 新增：平衡 v_l 的正负样本 ---
-                z_refusal_for_v = z_refusal_early
-                z_compliance_for_v = z_compliance_early
-                if balance_samples_enabled:
-                    z_refusal_for_v, z_compliance_for_v = balance_samples(
-                        z_refusal_early, z_compliance_early
-                    )
+                # 平衡样本以提取 v_l
+                n_refusal = len(z_refusal_early)
+                n_compliance = len(z_compliance_early)
+                min_samples_v = min(n_refusal, n_compliance)
 
-                v = get_diff_vector(z_refusal_for_v, z_compliance_for_v)
+                if log_balancing_info:
+                    logging.info(f"为提取 v_l 平衡样本: refusal({n_refusal}) vs compliance({n_compliance}). 将使用 {min_samples_v} 个样本。")
 
-                # 修改点 3: v 的符号校准
-                if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)):
-                    v = -v
+                indices_refusal = torch.randperm(n_refusal)[:min_samples_v]
+                indices_compliance = torch.randperm(n_compliance)[:min_samples_v]
 
+                z_refusal_balanced = z_refusal_early[indices_refusal]
+                z_compliance_balanced = z_compliance_early[indices_compliance]
+
+                v = get_diff_vector(z_refusal_balanced, z_compliance_balanced)
+                if (v @ z_refusal_balanced.mean(0)) <= (v @ z_compliance_balanced.mean(0)): v = -v
                 v_norm = torch.norm(v)
                 intervention_vectors[layer] = v / v_norm if v_norm > 0 else v
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
 
-        # --- 6. 提取条件向量 c_l (有害内容) ---
+        # --- 提取条件向量 c_l (有害内容) ---
         H_compliance_cont = compliance_activations.get(layer, {}).get('content_window')
         H_benign_cont = benign_activations.get(layer, {}).get('content_window')
         H_refusal_cont = refusal_activations.get(layer, {}).get('content_window')
@@ -455,37 +400,41 @@ def main():
             preprocessed_activations_for_plot['content_window'][layer]['refusal'] = z_refusal_cont
 
             if len(z_compliance_cont) > 0 and len(z_benign_cont) > 0:
-                # --- 新增：平衡 c_l 的正负样本 ---
-                z_compliance_for_c = z_compliance_cont
-                z_benign_for_c = z_benign_cont
-                if balance_samples_enabled:
-                    z_compliance_for_c, z_benign_for_c = balance_samples(
-                        z_compliance_cont, z_benign_cont
-                    )
-                c = get_diff_vector(z_compliance_for_c, z_benign_for_c)
+                # 平衡样本以提取 c_l
+                n_compliance = len(z_compliance_cont)
+                n_benign = len(z_benign_cont)
+                min_samples_c = min(n_compliance, n_benign)
 
-                # 修改点 3: c 的符号校准
-                if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)):
-                    c = -c
+                if log_balancing_info:
+                    logging.info(f"为提取 c_l 平衡样本: compliance({n_compliance}) vs benign({n_benign}). 将使用 {min_samples_c} 个样本。")
 
+                indices_compliance = torch.randperm(n_compliance)[:min_samples_c]
+                indices_benign = torch.randperm(n_benign)[:min_samples_c]
+
+                z_compliance_balanced = z_compliance_cont[indices_compliance]
+                z_benign_balanced = z_benign_cont[indices_benign]
+
+                c = get_diff_vector(z_compliance_balanced, z_benign_balanced)
+                if (c @ z_compliance_balanced.mean(0)) <= (c @ z_benign_balanced.mean(0)): c = -c
                 c_norm = torch.norm(c)
                 condition_vectors[layer] = c / c_norm if c_norm > 0 else c
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
-    # --- 7. (可选) 向量去耦合 ---
+        # 确保只记录一次
+        if log_balancing_info:
+            log_balancing_info = False
+
     if config.get('decoupling', {}).get('enabled', True):
         logging.info("正在对向量进行去耦合处理...")
         for layer in layers:
             if layer in intervention_vectors and layer in condition_vectors:
                 v_l = intervention_vectors[layer]
                 c_l = condition_vectors[layer]
-
                 if torch.norm(v_l) > 0 and torch.norm(c_l) > 0:
                     v_l_decoupled = v_l - (c_l @ v_l) * c_l
                     norm_v = torch.norm(v_l_decoupled)
                     if norm_v > 0: intervention_vectors[layer] = v_l_decoupled / norm_v
 
-                    # 修改点 2：修正去耦合公式
                     c_l_decoupled = c_l - (v_l @ c_l) * v_l
                     norm_c = torch.norm(c_l_decoupled)
                     if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c
@@ -493,35 +442,24 @@ def main():
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
-    # --- 8. 保存最终向量 ---
     torch.save(intervention_vectors, output_dir / "intervention_vectors.pt")
     logging.info(f"干预向量已保存到 {output_dir / 'intervention_vectors.pt'}")
-
     torch.save(condition_vectors, output_dir / "condition_vectors.pt")
     logging.info(f"条件向量已保存到 {output_dir / 'condition_vectors.pt'}")
 
-    # --- 9. (可选) 可视化 ---
     vis_config = config.get('visualization', {})
     if vis_config.get('enabled', False):
         plot_pca_visualizations(
-            llm_name=llm_name,
-            window_name='early_window',
-            layers=layers,
+            llm_name=llm_name, window_name='early_window', layers=layers,
             activations=preprocessed_activations_for_plot['early_window'],
-            vectors=all_vectors_for_plot,
-            output_dir=output_dir,  # 保存到与产物相同的目录
-            whitening_enabled=whitening_enabled,
-            sample_size=vis_config.get('sample_size', 200)
+            vectors=all_vectors_for_plot, output_dir=output_dir,
+            whitening_enabled=whitening_enabled, sample_size=vis_config.get('sample_size', 200)
         )
         plot_pca_visualizations(
-            llm_name=llm_name,
-            window_name='content_window',
-            layers=layers,
+            llm_name=llm_name, window_name='content_window', layers=layers,
             activations=preprocessed_activations_for_plot['content_window'],
-            vectors=all_vectors_for_plot,
-            output_dir=output_dir,  # 保存到与产物相同的目录
-            whitening_enabled=whitening_enabled,
-            sample_size=vis_config.get('sample_size', 200)
+            vectors=all_vectors_for_plot, output_dir=output_dir,
+            whitening_enabled=whitening_enabled, sample_size=vis_config.get('sample_size', 200)
         )
 
     logging.info("向量提取流程全部完成。")

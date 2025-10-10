@@ -54,5 +54,5 @@ processing:
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。
   # 设置为 null 或 0 来使用完整数据集。
-  sample_size: 0
+  sample_size: 10
 
