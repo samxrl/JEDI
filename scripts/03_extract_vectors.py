@@ -1,27 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-脚本 03: 提取表征向量 (双白化版)
+脚本 03: 提取表征向量并计算 Token 分数
 
-该脚本遵循“方法流程.md”文档中的第二和第三阶段，负责计算和提取
-干预向量 (intervention vectors) 和条件向量 (condition vectors)。
-此版本已更新，以兼容包含聚合后 (`aggregated`) 和逐 token (`per_token`)
-激活的新数据格式，并仅使用聚合后的激活进行向量提取。
+该脚本遵循“方法流程.md”文档中的第二和第三阶段，并为第四阶段准备数据。
 
 主要功能:
-1.  加载由 `02_extract_activations.py` 提取的激活，以及由 `02.5_judge_harmfulness.py`
-    生成的有害性标签。
-2.  **过滤样本**:
-    - 对于 "compliance" (A1) 数据，仅保留被标记为有害 (`label=='yes'`) 的样本。
-    - 对于 "refusal" (A2) 数据，仅保留被标记为无害 (`label=='no'`) 的样本。
-3.  **平衡样本**: 在计算差分向量前，通过随机下采样确保正负样本数量一致。
-4.  **双白化流程**:
-    - 使用良性 (B1) 数据集的聚合后激活，为“早期窗口”和“内容窗口”分别计算变换（中心化/白化）。
-5.  **提取干预向量 `v_l` (拒绝行为)**:
-    - 对平衡后的 A1 和 A2 样本在“早期窗口”的聚合后激活应用**行为变换**，并计算均值差。
-6.  **提取条件向量 `c_l` (有害内容)**:
-    - 对平衡后的 A1 和 B1 样本在“内容窗口”的聚合后激活应用**语义变换**，并计算均值差。
-7.  **(可选) 向量去耦合** 和 **可视化**。
-8.  将最终的变换矩阵、干预向量和条件向量保存到产物目录。
+1.  **向量提取**:
+    - 加载由 `02_extract_activations.py` 提取的聚合后激活 (格式: {layer: {window: tensor}})。
+    - 加载由 `02.5_judge_harmfulness.py` 生成的有害性标签。
+    - 过滤样本，仅保留有害的 "compliance" (A1) 和无害的 "refusal" (A2) 样本。
+    - 为“早期窗口”和“内容窗口”分别计算白化/中心化变换。
+    - 提取干预向量 `v_l` (拒绝行为) 和条件向量 `c_l` (有害内容)。
+    - (可选) 对向量进行去耦合和可视化。
+    - 保存变换矩阵和提取的向量。
+2.  **分数计算 (优化版)**:
+    - 在向量提取后，加载基础语言模型。
+    - **高效地**重新处理所有过滤后的样本 (A1, A2, B1)，利用已有的 `assistant_output`。
+    - 将 `prompt` 和 `assistant_output` 构建为完整对话，并执行一次前向传播。
+    - 对每个样本，获取其 `assistant_output` 部分每个 token 的隐藏状态。
+    - 使用已提取的条件向量 `c_l` 和变换，计算逐 token 的原始分数 `s_t`。
+    - 将所有样本的逐 token 分数序列按数据集类型分别保存到 .pt 文件，以供 `04_calibrate_defense.py` 使用。
 
 如何运行:
 python scripts/03_extract_vectors.py --config configs/PCA_config.yaml
@@ -38,6 +36,11 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
+import gc
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from typing import Dict, List
+
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -46,7 +49,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tuple[dict, pd.DataFrame]:
     """
     加载激活张量和对应的带标签的 CSV 文件，并根据标签进行过滤。
-    此版本适配新的数据结构，仅提取 'aggregated' 激活。
+    此版本适配已简化的激活数据结构 {layer: {window: tensor}}。
     """
     activations_path = data_dir / f"{llm_name}_{dataset_name}_activations.pt"
     outputs_path = data_dir / f"{llm_name}_{dataset_name}_outputs.csv"
@@ -59,21 +62,19 @@ def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tu
     activations = torch.load(activations_path, map_location='cpu')
     df = pd.read_csv(outputs_path)
 
+    if dataset_name == "benign":
+        # 对于良性数据，不需要过滤，直接返回加载的激活和df
+        return activations, df
+
+    # --- 对 compliance 和 refusal 数据进行过滤 ---
     if dataset_name == "compliance":
         target_label = "yes"
     elif dataset_name == "refusal":
         target_label = "no"
-    else:  # benign
-        # 对于良性数据，我们不需要过滤，但仍需提取 aggregated 部分
-        aggregated_activations = {}
-        for layer, windows in activations.items():
-            aggregated_activations[layer] = {}
-            for window_name, data in windows.items():
-                if 'aggregated' in data:
-                    aggregated_activations[layer][window_name] = data['aggregated']
-        return aggregated_activations, df
+    else:
+        # 意外情况，作为安全保护
+        return activations, df
 
-    # --- 对 compliance 和 refusal 数据进行过滤 ---
     initial_count = len(df)
     df.dropna(subset=['label'], inplace=True)
     valid_indices = df.index[df['label'] == target_label].tolist()
@@ -83,11 +84,8 @@ def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tu
     activations_filtered = {}
     for layer, windows in activations.items():
         activations_filtered[layer] = {}
-        for window_name, data in windows.items():
-            # 仅提取 'aggregated' 张量进行处理
-            tensor = data.get('aggregated')
+        for window_name, tensor in windows.items():
             if tensor is None:
-                logging.warning(f"在 L{layer}/{window_name} 中未找到 'aggregated' 键，跳过。")
                 continue
 
             if tensor.shape[0] != initial_count:
@@ -150,18 +148,27 @@ def calculate_dual_transforms(benign_activations: dict, whitening_config: dict) 
 def apply_transform(activations: torch.Tensor, transform: tuple) -> torch.Tensor:
     """
     将变换（中心化和可选的白化）应用于给定的激活张量。
+    支持 2D (N, D) 或 3D (B, N, D) 张量。
     """
     W, mu = transform
-    activations_cuda = activations.to(torch.float32).cuda()
-    mu_cuda = mu.to(torch.float32).cuda()
-    centered = activations_cuda - mu_cuda
+    # 确保在同一设备上操作
+    device = activations.device
+    mu_device = mu.to(device)
+
+    centered = activations - mu_device
 
     if W is not None:
-        W_cuda = W.to(torch.float32).cuda()
-        transformed = centered @ W_cuda.T
-        return transformed.cpu()
+        W_device = W.to(device)
+        # 使用 einsum 以支持 2D 和 3D
+        if activations.dim() == 2:
+            transformed = torch.einsum('nd,cd->nc', centered, W_device)
+        elif activations.dim() == 3:
+            transformed = torch.einsum('bnd,cd->bnc', centered, W_device)
+        else:
+            raise ValueError(f"不支持的激活维度: {activations.dim()}")
+        return transformed
     else:  # 仅中心化
-        return centered.cpu()
+        return centered
 
 
 def get_diff_vector(pos_activations: torch.Tensor, neg_activations: torch.Tensor) -> torch.Tensor:
@@ -288,6 +295,151 @@ def plot_pca_visualizations(
     plt.close(fig)
 
 
+def find_subsequence(main_list: List[int], sub_list: List[int]) -> int:
+    """
+    在主列表中查找子列表的起始索引。
+    """
+    main_len = len(main_list)
+    sub_len = len(sub_list)
+    for i in range(main_len - sub_len + 1):
+        if main_list[i:i + sub_len] == sub_list:
+            return i
+    return -1
+
+
+def get_model_and_tokenizer(model_path: str, model_kwargs: dict, device: str):
+    """ 加载 Hugging Face 模型和分词器。"""
+    logging.info(f"正在加载模型 '{model_path}' 用于分数计算...")
+    kwargs = model_kwargs.copy()
+    if "torch_dtype" in kwargs and isinstance(kwargs["torch_dtype"], str):
+        try:
+            kwargs["torch_dtype"] = getattr(torch, kwargs["torch_dtype"])
+        except AttributeError:
+            if kwargs["torch_dtype"] != "auto":
+                raise ValueError(f"无效的 torch_dtype: {kwargs['torch_dtype']}")
+
+    model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs).to(device)
+    model.eval()
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, padding_side="left")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = tokenizer.pad_token_id
+    logging.info("模型和分词器加载成功。")
+    return model, tokenizer
+
+
+def calculate_and_save_token_scores(
+    datasets_to_score: Dict[str, pd.DataFrame],
+    model,
+    tokenizer,
+    transforms: Dict,
+    condition_vectors: Dict,
+    config: Dict,
+    output_dir
+):
+    """
+    高效地重新处理样本，计算并保存逐 token 的分数，不再使用 model.generate()。
+    此版本使用子序列搜索来精确定位 assistant_output 的位置。
+    """
+    llm_name = config['llm_name']
+    device = config['processing']['device']
+    batch_size = config.get('processing', {}).get('batch_size', 4)
+
+    layers = sorted(condition_vectors.keys())
+    transforms_cont = transforms['content_window']
+
+    for name, df in datasets_to_score.items():
+        if df is None or df.empty:
+            logging.info(f"数据集 '{name}' 为空，跳过分数计算。")
+            continue
+
+        logging.info(f"--- 正在为 '{name}' ({len(df)} 个样本) 计算逐 token 分数 ---")
+
+        all_scores = {layer: [] for layer in layers}
+
+        for i in tqdm(range(0, len(df), batch_size), desc=f"正在为 {name} 评分"):
+            batch_df = df.iloc[i:i + batch_size]
+
+            full_input_texts = []
+            output_token_sequences = []
+
+            for idx, row in batch_df.iterrows():
+                prompt = str(row['prompt']) if pd.notna(row['prompt']) else ""
+                assistant_output = str(row['assistant_output']) if pd.notna(row['assistant_output']) else ""
+                assistant_output = assistant_output.rstrip()
+
+                # 1. 构建完整的对话历史
+                full_conversation = [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": assistant_output}
+                ]
+                full_text = tokenizer.apply_chat_template(full_conversation, tokenize=False, add_generation_prompt=False)
+                full_input_texts.append(full_text)
+
+                # 2. 单独对 assistant_output 分词，用于后续搜索
+                output_ids = tokenizer(assistant_output, add_special_tokens=False).input_ids
+                output_token_sequences.append(output_ids)
+
+            # 3. 批量分词完整对话
+            inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
+
+            # 4. 查找每个 assistant_output 在完整序列中的起始位置
+            output_start_indices = []
+            for batch_idx in range(len(batch_df)):
+                full_ids_list = inputs.input_ids[batch_idx].tolist()
+                output_ids_list = output_token_sequences[batch_idx]
+
+                start_idx = find_subsequence(full_ids_list, output_ids_list)
+                output_start_indices.append(start_idx)
+
+
+            # 5. 执行一次前向传播
+            with torch.no_grad():
+                full_outputs = model(**inputs, output_hidden_states=True)
+                all_hidden_states = full_outputs.hidden_states
+
+            # 6. 逐层、逐样本计算分数
+            for layer_idx in layers:
+                if layer_idx not in transforms_cont or layer_idx not in condition_vectors:
+                    continue
+
+                layer_hidden_states = all_hidden_states[layer_idx].to(torch.float32)
+                transform = transforms_cont[layer_idx]
+                c_vector = condition_vectors[layer_idx].to(device, dtype=torch.float32)
+
+                for batch_idx in range(len(batch_df)):
+                    start_idx = output_start_indices[batch_idx]
+                    output_len = len(output_token_sequences[batch_idx])
+
+                    if start_idx == -1:
+                        # 如果未找到或输出为空，则分数也为空
+                        if output_len > 0:
+                            logging.warning(f"无法为样本 {df.index[i + batch_idx]} 定位 assistant_output token 序列。")
+                        scores = torch.tensor([], dtype=torch.float32)
+                    else:
+                        end_idx = start_idx + output_len
+                        # 切片操作会自动处理边界，无需手动 min
+                        output_hidden_states = layer_hidden_states[batch_idx, start_idx:end_idx, :]
+
+                        if output_hidden_states.shape[0] > 0:
+                            transformed_activations = apply_transform(output_hidden_states, transform)
+                            scores = torch.einsum('sd,d->s', transformed_activations, c_vector)
+                        else:
+                            scores = torch.tensor([], dtype=torch.float32)
+
+                    all_scores[layer_idx].append(scores.cpu())
+
+            # 7. 清理内存
+            del full_outputs, all_hidden_states, inputs
+            gc.collect()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+        # 8. 保存分数
+        scores_save_path = output_dir / f"{llm_name}_{name}_token_scores.pt"
+        torch.save(all_scores, scores_save_path)
+        logging.info(f"已将 '{name}' 的逐 token 分数保存到 {scores_save_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="从模型激活中提取干预向量和条件向量。")
     parser.add_argument('--config', type=str, default='../configs/PCA_config.yaml',
@@ -308,9 +460,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"所有产物将保存到: {output_dir}")
 
-    compliance_activations, _ = load_and_filter_data(data_dir, llm_name, "compliance")
-    refusal_activations, _ = load_and_filter_data(data_dir, llm_name, "refusal")
-    benign_activations, _ = load_and_filter_data(data_dir, llm_name, "benign")
+    compliance_activations, compliance_df = load_and_filter_data(data_dir, llm_name, "compliance")
+    refusal_activations, refusal_df = load_and_filter_data(data_dir, llm_name, "refusal")
+    benign_activations, benign_df = load_and_filter_data(data_dir, llm_name, "benign")
 
     if not compliance_activations or not refusal_activations or not benign_activations:
         logging.error("缺少必要的数据集，无法继续。请先运行 02 和 02.5 脚本。")
@@ -339,7 +491,6 @@ def main():
     }
     all_vectors_for_plot = {layer: {} for layer in layers}
 
-    # --- 在循环外只记录一次平衡信息 ---
     log_balancing_info = True
 
     for layer in tqdm(layers, desc="提取向量"):
@@ -350,95 +501,72 @@ def main():
             logging.warning(f"第 {layer} 层缺少变换矩阵，跳过向量提取。")
             continue
 
-        # --- 提取干预向量 v_l (拒绝行为) ---
         H_refusal_early = refusal_activations.get(layer, {}).get('early_window')
         H_compliance_early = compliance_activations.get(layer, {}).get('early_window')
         H_benign_early = benign_activations.get(layer, {}).get('early_window')
 
         if H_refusal_early is not None and H_compliance_early is not None and H_benign_early is not None:
-            z_refusal_early = apply_transform(H_refusal_early, transform_early)
-            z_compliance_early = apply_transform(H_compliance_early, transform_early)
-            z_benign_early = apply_transform(H_benign_early, transform_early)
+            z_refusal_early = apply_transform(H_refusal_early.cuda(), transform_early).cpu()
+            z_compliance_early = apply_transform(H_compliance_early.cuda(), transform_early).cpu()
+            z_benign_early = apply_transform(H_benign_early.cuda(), transform_early).cpu()
 
             preprocessed_activations_for_plot['early_window'][layer]['refusal'] = z_refusal_early
             preprocessed_activations_for_plot['early_window'][layer]['compliance'] = z_compliance_early
             preprocessed_activations_for_plot['early_window'][layer]['benign'] = z_benign_early
 
             if len(z_refusal_early) > 0 and len(z_compliance_early) > 0:
-                # 平衡样本以提取 v_l
-                n_refusal = len(z_refusal_early)
-                n_compliance = len(z_compliance_early)
+                n_refusal, n_compliance = len(z_refusal_early), len(z_compliance_early)
                 min_samples_v = min(n_refusal, n_compliance)
-
                 if log_balancing_info:
                     logging.info(f"为提取 v_l 平衡样本: refusal({n_refusal}) vs compliance({n_compliance}). 将使用 {min_samples_v} 个样本。")
-
                 indices_refusal = torch.randperm(n_refusal)[:min_samples_v]
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_v]
-
-                z_refusal_balanced = z_refusal_early[indices_refusal]
-                z_compliance_balanced = z_compliance_early[indices_compliance]
-
-                v = get_diff_vector(z_refusal_balanced, z_compliance_balanced)
-                if (v @ z_refusal_balanced.mean(0)) <= (v @ z_compliance_balanced.mean(0)): v = -v
+                v = get_diff_vector(z_refusal_early[indices_refusal], z_compliance_early[indices_compliance])
+                if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)): v = -v
                 v_norm = torch.norm(v)
                 intervention_vectors[layer] = v / v_norm if v_norm > 0 else v
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
 
-        # --- 提取条件向量 c_l (有害内容) ---
         H_compliance_cont = compliance_activations.get(layer, {}).get('content_window')
         H_benign_cont = benign_activations.get(layer, {}).get('content_window')
         H_refusal_cont = refusal_activations.get(layer, {}).get('content_window')
 
         if H_compliance_cont is not None and H_benign_cont is not None and H_refusal_cont is not None:
-            z_compliance_cont = apply_transform(H_compliance_cont, transform_cont)
-            z_benign_cont = apply_transform(H_benign_cont, transform_cont)
-            z_refusal_cont = apply_transform(H_refusal_cont, transform_cont)
+            z_compliance_cont = apply_transform(H_compliance_cont.cuda(), transform_cont).cpu()
+            z_benign_cont = apply_transform(H_benign_cont.cuda(), transform_cont).cpu()
+            z_refusal_cont = apply_transform(H_refusal_cont.cuda(), transform_cont).cpu()
 
             preprocessed_activations_for_plot['content_window'][layer]['compliance'] = z_compliance_cont
             preprocessed_activations_for_plot['content_window'][layer]['benign'] = z_benign_cont
             preprocessed_activations_for_plot['content_window'][layer]['refusal'] = z_refusal_cont
 
             if len(z_compliance_cont) > 0 and len(z_benign_cont) > 0:
-                # 平衡样本以提取 c_l
-                n_compliance = len(z_compliance_cont)
-                n_benign = len(z_benign_cont)
+                n_compliance, n_benign = len(z_compliance_cont), len(z_benign_cont)
                 min_samples_c = min(n_compliance, n_benign)
-
                 if log_balancing_info:
                     logging.info(f"为提取 c_l 平衡样本: compliance({n_compliance}) vs benign({n_benign}). 将使用 {min_samples_c} 个样本。")
-
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_c]
                 indices_benign = torch.randperm(n_benign)[:min_samples_c]
-
-                z_compliance_balanced = z_compliance_cont[indices_compliance]
-                z_benign_balanced = z_benign_cont[indices_benign]
-
-                c = get_diff_vector(z_compliance_balanced, z_benign_balanced)
-                if (c @ z_compliance_balanced.mean(0)) <= (c @ z_benign_balanced.mean(0)): c = -c
+                c = get_diff_vector(z_compliance_cont[indices_compliance], z_benign_cont[indices_benign])
+                if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)): c = -c
                 c_norm = torch.norm(c)
                 condition_vectors[layer] = c / c_norm if c_norm > 0 else c
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
-        # 确保只记录一次
-        if log_balancing_info:
-            log_balancing_info = False
+        if log_balancing_info: log_balancing_info = False
 
     if config.get('decoupling', {}).get('enabled', True):
         logging.info("正在对向量进行去耦合处理...")
         for layer in layers:
             if layer in intervention_vectors and layer in condition_vectors:
-                v_l = intervention_vectors[layer]
-                c_l = condition_vectors[layer]
+                v_l, c_l = intervention_vectors[layer], condition_vectors[layer]
                 if torch.norm(v_l) > 0 and torch.norm(c_l) > 0:
                     v_l_decoupled = v_l - (c_l @ v_l) * c_l
                     norm_v = torch.norm(v_l_decoupled)
                     if norm_v > 0: intervention_vectors[layer] = v_l_decoupled / norm_v
-
                     c_l_decoupled = c_l - (v_l @ c_l) * v_l
                     norm_c = torch.norm(c_l_decoupled)
                     if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c
-
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
@@ -462,8 +590,45 @@ def main():
             whitening_enabled=whitening_enabled, sample_size=vis_config.get('sample_size', 200)
         )
 
-    logging.info("向量提取流程全部完成。")
+    logging.info("向量提取流程完成。")
+
+    # --- 新增：计算并保存逐 token 分数 ---
+    logging.info("--- 开始计算逐 token 分数 ---")
+
+    # 检查并设置模型加载所需配置
+    if 'model_path' not in config:
+        config['model_path'] = f"../../../models/{config['llm_name']}"
+        logging.warning(f"在配置中未找到 'model_path'。推断路径为: {config['model_path']}")
+    if 'model_kwargs' not in config:
+        config['model_kwargs'] = {"torch_dtype": "bfloat16", "trust_remote_code": True}
+        logging.warning("在配置中未找到 'model_kwargs'。使用默认值。")
+
+    # 加载模型
+    model, tokenizer = get_model_and_tokenizer(
+        config['model_path'],
+        config['model_kwargs'],
+        config.get('processing', {}).get('device', 'cuda')
+    )
+
+    datasets_to_score = {
+        "compliance": compliance_df,
+        "refusal": refusal_df,
+        "benign": benign_df,
+    }
+
+    calculate_and_save_token_scores(
+        datasets_to_score=datasets_to_score,
+        model=model,
+        tokenizer=tokenizer,
+        transforms=all_transforms,
+        condition_vectors=condition_vectors,
+        config=config,
+        output_dir=output_dir
+    )
+
+    logging.info("所有流程全部完成。")
 
 
 if __name__ == "__main__":
     main()
+

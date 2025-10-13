@@ -3,7 +3,7 @@
 脚本 02: 提取模型激活
 
 该脚本遵循“方法流程.md”文档中的第二阶段，负责从语言模型中提取隐藏状态（激活）。
-此版本已更新，以支持双白化流程，并同时保存两种类型的激活：
+此版本已更新，以支持双白化流程，并为节省磁盘空间，仅保存聚合后的激活。
 
 主要功能:
 1.  加载由 `01_prepare_datasets.py` 生成的结构化数据集 (A1-满足, A2-拒绝, B1-良性满足)。
@@ -12,10 +12,9 @@
 4.  为所有样本类型 (A1, A2, B1) 提取并保存两类激活窗口：
     - “早期窗口” (early_window): 对应于前缀部分的隐藏态。
     - “内容窗口” (content_window): 对应于新生成内容部分的隐藏态。
-5.  **修改点**: 对于每个窗口，同时保存两种形式的激活：
-    - `aggregated`: 根据配置（如 'mean' 或 'last'）聚合后的单个向量。
-    - `per_token`: 窗口内每个 token 的原始隐藏状态序列。
-6.  将包含上述结构的激活字典保存到 .pt 文件，并将模型的自然语言输出保存到单独的 CSV 文件。
+5.  **修改点**: 对于每个窗口，仅保存根据配置（如 'mean' 或 'last'）聚合后的单个向量。
+    不再保存逐 token 的原始隐藏状态序列，以大幅减少存储占用。
+6.  将聚合后的激活张量直接保存在字典中 (格式: {layer: {window: tensor}})，并将模型的自然语言输出保存到单独的 CSV 文件。
 7.  **内存优化**: 采用分块保存策略，每处理10个批次就将数据写入临时文件并清空内存，
     最后将所有临时块合并，以处理大规模数据集。
 
@@ -194,11 +193,11 @@ def process_batch(
         # `full_outputs` 包含计算图和原始张量，是主要内存消耗者
         del full_outputs
 
-    # --- MODIFICATION START: 初始化新的激活数据结构 ---
+    # --- MODIFICATION START: 初始化更简单的数据结构 ---
     batch_activations = {
         layer: {
-            'early_window': {'aggregated': [], 'per_token': []},
-            'content_window': {'aggregated': [], 'per_token': []}
+            'early_window': [],
+            'content_window': []
         } for layer in extraction_config['layers']
     }
     # --- MODIFICATION END ---
@@ -207,14 +206,13 @@ def process_batch(
     for layer_idx in extraction_config['layers']:
         layer_hidden_states = all_hidden_states[layer_idx]
 
-        # --- MODIFICATION START: 提取并存储两种类型的 'content_window' 激活 ---
+        # --- MODIFICATION START: 仅提取并存储 'content_window' 的聚合激活 ---
         content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
         if content_window_states.shape[1] > 0:
-            batch_activations[layer_idx]['content_window']['per_token'].append(content_window_states.cpu())
             agg_content_batch = aggregate_activations(content_window_states, extraction_config['aggregation'])
-            batch_activations[layer_idx]['content_window']['aggregated'].append(agg_content_batch.cpu())
-            del agg_content_batch  # 删除中间聚合张量
-        del content_window_states  # 删除切片
+            batch_activations[layer_idx]['content_window'].append(agg_content_batch.cpu())
+            del agg_content_batch
+        del content_window_states
         # --- MODIFICATION END ---
 
         for i in range(current_batch_size):
@@ -230,14 +228,12 @@ def process_batch(
                 prefix_end_idx = prefix_start_idx + prefix_len
                 early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
 
-                # --- MODIFICATION START: 提取并存储两种类型的 'early_window' 激活 ---
-                batch_activations[layer_idx]['early_window']['per_token'].append(early_window_slice.squeeze(0).cpu())
+                # --- MODIFICATION START: 仅提取并存储 'early_window' 的聚合激活 ---
                 agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
-                batch_activations[layer_idx]['early_window']['aggregated'].append(agg_early.cpu())
-                del early_window_slice, agg_early  # 删除切片和聚合张量
+                batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
+                del early_window_slice, agg_early
                 # --- MODIFICATION END ---
 
-        # 删除处理完的当前层的隐藏状态
         del layer_hidden_states
 
     # 函数返回前进行最终清理
@@ -255,24 +251,10 @@ def aggregate_and_format_chunk(activations_dict: Dict) -> Dict:
     chunk_tensors = {}
     for layer_idx, windows in activations_dict.items():
         chunk_tensors[layer_idx] = {}
-        # -- 处理 early_window --
-        chunk_tensors[layer_idx]['early_window'] = {}
-        if windows['early_window']['aggregated']:
-            chunk_tensors[layer_idx]['early_window']['aggregated'] = torch.cat(windows['early_window']['aggregated'], dim=0)
-        if windows['early_window']['per_token']:
-            chunk_tensors[layer_idx]['early_window']['per_token'] = windows['early_window']['per_token']
-
-        # -- 处理 content_window --
-        chunk_tensors[layer_idx]['content_window'] = {}
-        if windows['content_window']['aggregated']:
-            chunk_tensors[layer_idx]['content_window']['aggregated'] = torch.cat(windows['content_window']['aggregated'], dim=0)
-        if windows['content_window']['per_token']:
-            flat_per_token_list = [
-                sample_tensor.clone()
-                for batch_tensor in windows['content_window']['per_token']
-                for sample_tensor in torch.unbind(batch_tensor, dim=0)
-            ]
-            chunk_tensors[layer_idx]['content_window']['per_token'] = flat_per_token_list
+        if windows['early_window']:
+            chunk_tensors[layer_idx]['early_window'] = torch.cat(windows['early_window'], dim=0)
+        if windows['content_window']:
+            chunk_tensors[layer_idx]['content_window'] = torch.cat(windows['content_window'], dim=0)
     return chunk_tensors
 
 
@@ -345,8 +327,8 @@ def main():
         def get_empty_activations_dict():
             return {
                 layer: {
-                    'early_window': {'aggregated': [], 'per_token': []},
-                    'content_window': {'aggregated': [], 'per_token': []}
+                    'early_window': [],
+                    'content_window': []
                 } for layer in config['extraction']['layers']
             }
 
@@ -380,14 +362,10 @@ def main():
                     chunk_outputs_for_csv.append(output_record)
 
                 for layer_idx, windows in batch_activations.items():
-                    if windows['early_window']['aggregated']:
-                        chunk_activations[layer_idx]['early_window']['aggregated'].extend(windows['early_window']['aggregated'])
-                    if windows['early_window']['per_token']:
-                        chunk_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
-                    if windows['content_window']['aggregated']:
-                        chunk_activations[layer_idx]['content_window']['aggregated'].extend(windows['content_window']['aggregated'])
-                    if windows['content_window']['per_token']:
-                        chunk_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
+                    if windows['early_window']:
+                        chunk_activations[layer_idx]['early_window'].extend(windows['early_window'])
+                    if windows['content_window']:
+                        chunk_activations[layer_idx]['content_window'].extend(windows['content_window'])
 
                 del batch_activations, assistant_outputs
                 batches_in_chunk += 1
@@ -442,11 +420,10 @@ def main():
 
             chunk_data = torch.load(chunk_path, map_location='cpu')
             for layer_idx, windows in chunk_data.items():
-                # 注意：此时 'aggregated' 是张量，'per_token' 是列表
-                final_activations[layer_idx]['early_window']['aggregated'].append(windows['early_window']['aggregated'])
-                final_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
-                final_activations[layer_idx]['content_window']['aggregated'].append(windows['content_window']['aggregated'])
-                final_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
+                if 'early_window' in windows:
+                    final_activations[layer_idx]['early_window'].append(windows['early_window'])
+                if 'content_window' in windows:
+                    final_activations[layer_idx]['content_window'].append(windows['content_window'])
 
             del chunk_data
             chunk_path.unlink()  # 删除已合并的块文件

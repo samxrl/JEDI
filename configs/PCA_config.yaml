@@ -1,44 +1,43 @@
-# SARC/configs/vector_extraction_config.yaml
+# SARC/configs/PCA_config.yaml
 #
 # 03_extract_vectors.py 脚本的配置文件。
-# 该文件用于控制如何从激活中提取干预向量和条件向量。
+# 该文件用于控制向量提取和后续的逐 token 分数计算。
 
 # 必须与 extraction_config.yaml 中的 `model_name` 的基本名称匹配。
 # 这用于在 `data_dir` 中定位正确的子目录。
 llm_name: "vicuna_7b_v1_5"
 
+# --- 模型配置 (用于逐 token 分数计算) ---
+# 在提取向量后，需要重新加载模型以计算分数。
+model_path: "../../../models/vicuna_7b_v1_5"
+model_kwargs:
+  torch_dtype: "bfloat16"
+  trust_remote_code: True
+
 # --- 路径配置 (相对于项目根目录 SARC/) ---
 # 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
 data_dir: "data/activations"
-# 保存最终产物（向量、白化矩阵）的目录。
+# 保存最终产物（向量、变换、分数）的目录。
 output_dir: "data/activations"
 
-# --- 白化参数 ---
-# 用于表征标准化。
+# --- 向量提取参数 ---
 whitening:
-  # 在计算协方-差矩阵的逆时，为对角线添加一个小的正则化项。
-  # 这可以防止由于矩阵奇异或接近奇异而导致的数值不稳定性。
   enabled: true
-  # 推荐值: 1e-5 到 1e-3
   epsilon: 0.0001
-
-# --- PCA 参数 ---
-# 用于从激活差异中提取方向向量。
-pca:
-  # 在提取方向向量之前，通过随机下采样来平衡正负样本的数量。
-  # 这有助于防止因样本数量不平衡而导致的偏差。
-  balance_samples: true
-  # 要提取的主成分数量。对于我们的目的，我们只关心最重要的方向，
-  # 因此设置为 1。
-  n_components: 1
-
-# --- 去耦合配置 ---
-# (推荐) 减少干预向量和条件向量之间的相关性。
 decoupling:
-  # 是否启用去耦合步骤。
   enabled: true
 
-# 可选的可视化配置
+# --- 分数计算参数 ---
+generation:
+  # 在计算分数时，模型需要生成内容以获取隐藏状态。
+  # 此值应与 extraction_config.yaml 中的 max_new_tokens 保持一致。
+  max_new_tokens: 128
+processing:
+  # 分数计算阶段的批量大小。根据显存（VRAM）进行调整。
+  batch_size: 10
+  device: "cuda"
+
+# --- 可选的可视化配置 ---
 visualization:
-  enabled: true  # 设置为 true 来生成并保存 PCA 图表
-  sample_size: 200 # 每类在图上绘制的最大点数
+  enabled: true
+  sample_size: 200
