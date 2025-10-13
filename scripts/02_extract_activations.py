@@ -16,6 +16,8 @@
     - `aggregated`: 根据配置（如 'mean' 或 'last'）聚合后的单个向量。
     - `per_token`: 窗口内每个 token 的原始隐藏状态序列。
 6.  将包含上述结构的激活字典保存到 .pt 文件，并将模型的自然语言输出保存到单独的 CSV 文件。
+7.  **内存优化**: 采用分块保存策略，每处理10个批次就将数据写入临时文件并清空内存，
+    最后将所有临时块合并，以处理大规模数据集。
 
 如何运行:
 python scripts/02_extract_activations.py --config configs/extraction_config.yaml
@@ -30,7 +32,7 @@ from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import gc
-from typing import List
+from typing import List, Dict, Any
 
 # 配置基本日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -135,7 +137,7 @@ def process_batch(
 ):
     """
     处理一个批次的数据以提取激活。
-    此版本返回一个包含 'aggregated' 和 'per_token' 两种激活的字典。
+    此版本通过删除临时变量来加强内存管理。
     """
     current_batch_size = len(batch_df)
     conversations = [json.loads(conv_str) for conv_str in batch_df['conversation']]
@@ -151,6 +153,7 @@ def process_batch(
         full_input_texts.append(text)
 
     inputs = tokenizer(full_input_texts, return_tensors="pt", padding=True, truncation=True).to(device)
+    del full_input_texts  # 删除已使用的列表
     padded_prompt_len = inputs['input_ids'].shape[1]
 
     with torch.no_grad():
@@ -161,6 +164,8 @@ def process_batch(
             pad_token_id=tokenizer.pad_token_id,
             do_sample=False
         )
+        # `inputs` 在 generate 后不再需要
+        del inputs
 
         # --- 解码和索引查找 ---
         assistant_outputs = []
@@ -169,7 +174,7 @@ def process_batch(
         for i in range(current_batch_size):
             prefix_text = conversations[i][1]['content']
             prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
-            prompt_ids_list = inputs['input_ids'][i].tolist()
+            prompt_ids_list = generated_sequences[i, :padded_prompt_len].tolist()
             start_idx = find_subsequence(prompt_ids_list, prefix_ids)
             if start_idx != -1:
                 prefix_start_indices[i] = start_idx
@@ -181,9 +186,13 @@ def process_batch(
                 decoded_new_part = tokenizer.decode(generated_sequences[i, padded_prompt_len:], skip_special_tokens=True)
                 assistant_outputs.append(prefix_text + decoded_new_part)
 
+        del prefix_ids, prompt_ids_list  # 删除循环中的临时变量
+
         # --- 步骤 2: 对完整序列进行一次前向传播，以获取所有隐藏状态 ---
         full_outputs = model(generated_sequences, output_hidden_states=True)
         all_hidden_states = [h.cpu() for h in full_outputs.hidden_states]
+        # `full_outputs` 包含计算图和原始张量，是主要内存消耗者
+        del full_outputs
 
     # --- MODIFICATION START: 初始化新的激活数据结构 ---
     batch_activations = {
@@ -201,11 +210,11 @@ def process_batch(
         # --- MODIFICATION START: 提取并存储两种类型的 'content_window' 激活 ---
         content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
         if content_window_states.shape[1] > 0:
-            # 存储逐 token 激活 (整个批次)
             batch_activations[layer_idx]['content_window']['per_token'].append(content_window_states.cpu())
-            # 存储聚合后激活 (整个批次)
             agg_content_batch = aggregate_activations(content_window_states, extraction_config['aggregation'])
             batch_activations[layer_idx]['content_window']['aggregated'].append(agg_content_batch.cpu())
+            del agg_content_batch  # 删除中间聚合张量
+        del content_window_states  # 删除切片
         # --- MODIFICATION END ---
 
         for i in range(current_batch_size):
@@ -222,14 +231,49 @@ def process_batch(
                 early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
 
                 # --- MODIFICATION START: 提取并存储两种类型的 'early_window' 激活 ---
-                # 存储逐 token 激活 (单个样本)
                 batch_activations[layer_idx]['early_window']['per_token'].append(early_window_slice.squeeze(0).cpu())
-                # 存储聚合后激活 (单个样本)
                 agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
                 batch_activations[layer_idx]['early_window']['aggregated'].append(agg_early.cpu())
+                del early_window_slice, agg_early  # 删除切片和聚合张量
                 # --- MODIFICATION END ---
 
+        # 删除处理完的当前层的隐藏状态
+        del layer_hidden_states
+
+    # 函数返回前进行最终清理
+    del all_hidden_states
+    del generated_sequences
+    gc.collect()
+
     return batch_activations, assistant_outputs
+
+
+def aggregate_and_format_chunk(activations_dict: Dict) -> Dict:
+    """
+    对一个块（chunk）内的激活数据进行聚合和格式化，使其可以被保存。
+    """
+    chunk_tensors = {}
+    for layer_idx, windows in activations_dict.items():
+        chunk_tensors[layer_idx] = {}
+        # -- 处理 early_window --
+        chunk_tensors[layer_idx]['early_window'] = {}
+        if windows['early_window']['aggregated']:
+            chunk_tensors[layer_idx]['early_window']['aggregated'] = torch.cat(windows['early_window']['aggregated'], dim=0)
+        if windows['early_window']['per_token']:
+            chunk_tensors[layer_idx]['early_window']['per_token'] = windows['early_window']['per_token']
+
+        # -- 处理 content_window --
+        chunk_tensors[layer_idx]['content_window'] = {}
+        if windows['content_window']['aggregated']:
+            chunk_tensors[layer_idx]['content_window']['aggregated'] = torch.cat(windows['content_window']['aggregated'], dim=0)
+        if windows['content_window']['per_token']:
+            flat_per_token_list = [
+                sample_tensor.clone()
+                for batch_tensor in windows['content_window']['per_token']
+                for sample_tensor in torch.unbind(batch_tensor, dim=0)
+            ]
+            chunk_tensors[layer_idx]['content_window']['per_token'] = flat_per_token_list
+    return chunk_tensors
 
 
 def main():
@@ -287,24 +331,38 @@ def main():
             logging.info(f"数据集 '{name}' 包含 {len(df)} 个样本。正在根据配置随机采样 {sample_size} 个样本...")
             df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
 
-        # --- MODIFICATION START: 初始化新的总激活数据结构 ---
-        total_activations = {
-            layer: {
-                'early_window': {'aggregated': [], 'per_token': []},
-                'content_window': {'aggregated': [], 'per_token': []}
-            } for layer in config['extraction']['layers']
-        }
-        # --- MODIFICATION END ---
+        # 定义最终和临时文件路径
+        final_pt_path = output_dir / f"{llm_name}_{name}_activations.pt"
+        final_csv_path = output_dir / f"{llm_name}_{name}_outputs.csv"
 
-        all_outputs_for_csv = []
+        # 清理上一次运行可能留下的临时文件
+        for temp_file in output_dir.glob(f"{llm_name}_{name}_activations_chunk_*.pt"):
+            temp_file.unlink()
+        if final_csv_path.exists():
+            final_csv_path.unlink()
+
+        # 初始化用于存储当前块数据的容器
+        def get_empty_activations_dict():
+            return {
+                layer: {
+                    'early_window': {'aggregated': [], 'per_token': []},
+                    'content_window': {'aggregated': [], 'per_token': []}
+                } for layer in config['extraction']['layers']
+            }
+
+        chunk_activations = get_empty_activations_dict()
+        chunk_outputs_for_csv = []
+        chunk_index = 0
+        batches_in_chunk = 0
+
         batch_size = config['processing']['batch_size']
         use_grouping = 'prompt' in df.columns
         grouped = df.groupby('prompt') if use_grouping else [('all', df)]
         progress_bar = tqdm(total=len(df), desc=f"正在提取 {name}")
 
-        # --- 4. 按分组处理 ---
+        # --- 4. 按分组和批次处理 ---
+        processed_rows = 0
         for prompt, group_df in grouped:
-            # --- 5. 在分组内按批次处理 ---
             for i in range(0, len(group_df), batch_size):
                 batch_df = group_df.iloc[i:i + batch_size]
                 batch_activations, assistant_outputs = process_batch(
@@ -312,84 +370,97 @@ def main():
                     config['generation'], config['extraction'], config['processing']['device']
                 )
 
+                # 累积当前块的结果
                 for idx, assistant_text in enumerate(assistant_outputs):
                     original_row = batch_df.iloc[idx]
                     output_record = {'prompt': original_row['prompt'], 'assistant_output': assistant_text}
                     for col in ['prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'source']:
                         if col in original_row:
                             output_record[col] = original_row[col]
-                    all_outputs_for_csv.append(output_record)
+                    chunk_outputs_for_csv.append(output_record)
 
-                # --- MODIFICATION START: 收集批次结果到总激活字典 ---
                 for layer_idx, windows in batch_activations.items():
-                    # early_window 的结果是列表，直接扩展
                     if windows['early_window']['aggregated']:
-                        total_activations[layer_idx]['early_window']['aggregated'].extend(windows['early_window']['aggregated'])
+                        chunk_activations[layer_idx]['early_window']['aggregated'].extend(windows['early_window']['aggregated'])
                     if windows['early_window']['per_token']:
-                        total_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
-                    # content_window 的结果是批次张量，直接追加
+                        chunk_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
                     if windows['content_window']['aggregated']:
-                        total_activations[layer_idx]['content_window']['aggregated'].extend(windows['content_window']['aggregated'])
+                        chunk_activations[layer_idx]['content_window']['aggregated'].extend(windows['content_window']['aggregated'])
                     if windows['content_window']['per_token']:
-                        total_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
-                # --- MODIFICATION END ---
+                        chunk_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
 
-                progress_bar.update(len(batch_df))
                 del batch_activations, assistant_outputs
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                gc.collect()
+                batches_in_chunk += 1
+                processed_rows += len(batch_df)
+                progress_bar.update(len(batch_df))
 
+                # --- 5. 检查是否需要保存块 ---
+                is_last_batch_of_dataset = processed_rows == len(df)
+                if (batches_in_chunk >= 10 or is_last_batch_of_dataset) and chunk_outputs_for_csv:
+                    logging.info(f"已处理 {batches_in_chunk} 个批次, 正在保存块 {chunk_index}...")
+
+                    # 格式化并保存激活块
+                    chunk_tensors = aggregate_and_format_chunk(chunk_activations)
+                    chunk_pt_path = output_dir / f"{llm_name}_{name}_activations_chunk_{chunk_index}.pt"
+                    torch.save(chunk_tensors, chunk_pt_path)
+
+                    # 保存输出块到CSV
+                    output_df = pd.DataFrame(chunk_outputs_for_csv)
+                    if name == "benign":
+                        cols_order = ['prompt', 'prefix', 'assistant_output', 'source']
+                    else:
+                        output_df['label'] = None
+                        cols_order = ['prompt', 'prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'assistant_output', 'label']
+                    final_cols = [col for col in cols_order if col in output_df.columns]
+                    output_df = output_df[final_cols]
+
+                    # 只有第一个块需要写入表头
+                    is_first_chunk = (chunk_index == 0)
+                    output_df.to_csv(final_csv_path, mode='a', index=False, header=is_first_chunk, encoding='utf-8-sig')
+
+                    # 重置容器以释放内存
+                    chunk_activations = get_empty_activations_dict()
+                    chunk_outputs_for_csv = []
+                    batches_in_chunk = 0
+                    chunk_index += 1
+
+                    del chunk_tensors, output_df
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
         progress_bar.close()
 
-        # --- 6. 聚合结果并保存 ---
-        # --- MODIFICATION START: 构建最终要保存的嵌套字典 ---
-        final_tensors = {}
-        for layer_idx, windows in total_activations.items():
-            final_tensors[layer_idx] = {}
-            # -- 处理 early_window --
-            final_tensors[layer_idx]['early_window'] = {}
-            if windows['early_window']['aggregated']:
-                final_tensors[layer_idx]['early_window']['aggregated'] = torch.cat(windows['early_window']['aggregated'], dim=0)
-            # per_token 激活由于长度不一，作为张量列表保存
-            if windows['early_window']['per_token']:
-                final_tensors[layer_idx]['early_window']['per_token'] = windows['early_window']['per_token']
+        # --- 6. 合并所有激活块 ---
+        logging.info(f"正在合并 {chunk_index} 个激活块以创建最终文件...")
+        final_activations = get_empty_activations_dict()
 
-            # -- 处理 content_window --
-            final_tensors[layer_idx]['content_window'] = {}
-            if windows['content_window']['aggregated']:
-                final_tensors[layer_idx]['content_window']['aggregated'] = torch.cat(windows['content_window']['aggregated'], dim=0)
+        for i in range(chunk_index):
+            chunk_path = output_dir / f"{llm_name}_{name}_activations_chunk_{i}.pt"
+            if not chunk_path.exists():
+                logging.warning(f"未找到块文件 {chunk_path}，跳过。")
+                continue
 
-            # FIX: The assumption that all content windows have the same length across batches is incorrect,
-            # as generation can stop early (e.g., EOS token). This was causing the RuntimeError.
-            # We now save it as a list of tensors, just like with the early_window.
-            # First, we flatten the list of batch tensors into a single list of sample-level tensors.
-            if windows['content_window']['per_token']:
-                flat_per_token_list = [
-                    sample_tensor.clone()  # clone to ensure memory is contiguous
-                    for batch_tensor in windows['content_window']['per_token']
-                    for sample_tensor in torch.unbind(batch_tensor, dim=0)
-                ]
-                final_tensors[layer_idx]['content_window']['per_token'] = flat_per_token_list
-        # --- MODIFICATION END ---
+            chunk_data = torch.load(chunk_path, map_location='cpu')
+            for layer_idx, windows in chunk_data.items():
+                # 注意：此时 'aggregated' 是张量，'per_token' 是列表
+                final_activations[layer_idx]['early_window']['aggregated'].append(windows['early_window']['aggregated'])
+                final_activations[layer_idx]['early_window']['per_token'].extend(windows['early_window']['per_token'])
+                final_activations[layer_idx]['content_window']['aggregated'].append(windows['content_window']['aggregated'])
+                final_activations[layer_idx]['content_window']['per_token'].extend(windows['content_window']['per_token'])
 
-        output_path = output_dir / f"{llm_name}_{name}_activations.pt"
-        torch.save(final_tensors, output_path)
-        logging.info(f"成功将 '{name}' 的激活保存到 {output_path}")
+            del chunk_data
+            chunk_path.unlink()  # 删除已合并的块文件
 
-        # 保存自然语言输出 .csv 文件
-        if all_outputs_for_csv:
-            output_df = pd.DataFrame(all_outputs_for_csv)
-            if name == "benign":
-                cols_order = ['prompt', 'prefix', 'assistant_output', 'source']
-            else:
-                output_df['label'] = None
-                cols_order = ['prompt', 'prefix', 'behavior', 'FunctionalCategory', 'ContextString', 'assistant_output', 'label']
-            final_cols = [col for col in cols_order if col in output_df.columns]
-            output_df = output_df[final_cols]
-            output_csv_path = output_dir / f"{llm_name}_{name}_outputs.csv"
-            output_df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
-            logging.info(f"成功将 '{name}' 的自然语言输出保存到 {output_csv_path}")
+        # 最后一次聚合所有块
+        final_tensors_to_save = aggregate_and_format_chunk(final_activations)
+        torch.save(final_tensors_to_save, final_pt_path)
+        logging.info(f"成功将 '{name}' 的激活合并并保存到 {final_pt_path}")
+
+        # 清理内存
+        del df, final_activations, final_tensors_to_save
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     logging.info("所有数据集的激活提取和输出保存过程已完成。")
 
