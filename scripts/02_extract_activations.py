@@ -374,7 +374,7 @@ def main():
 
                 # --- 5. 检查是否需要保存块 ---
                 is_last_batch_of_dataset = processed_rows == len(df)
-                if (batches_in_chunk >= 10 or is_last_batch_of_dataset) and chunk_outputs_for_csv:
+                if (batches_in_chunk >= 50 or is_last_batch_of_dataset) and chunk_outputs_for_csv:
                     logging.info(f"已处理 {batches_in_chunk} 个批次, 正在保存块 {chunk_index}...")
 
                     # 格式化并保存激活块

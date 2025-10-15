@@ -198,7 +198,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
         f"-> (FPR={best_params['fpr']:.4f}, TPR={best_params['tpr']:.4f}, Delay={best_params['delay']:.2f}) ***"
     )
 
-    return best_params.to_dict(), results_df
+    return best_params.to_dict(), results_df , benign_r_mean
 
 
 def main():
@@ -249,7 +249,7 @@ def main():
     theta = np.quantile(benign_scores_best_layer, config['calibration_params']['theta_quantile'])
 
     # 校准 CUSUM
-    best_cusum_params, _ = calibrate_cusum(
+    best_cusum_params, _, benign_r_mean= calibrate_cusum(
         harmful_sequences_by_layer[best_layer_idx],
         benign_sequences_by_layer[best_layer_idx],
         theta,
@@ -267,7 +267,8 @@ def main():
     defense_params = {
         'llm_name': llm_name,
         'best_layer': best_layer_idx,
-        'theta': theta,
+        'theta': float(theta),
+        'mu_hat':float(benign_r_mean),
         'kappa': best_cusum_params['kappa'],
         'h': best_cusum_params['h'],
     }

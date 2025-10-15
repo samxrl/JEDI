@@ -30,7 +30,7 @@ data_dir: "data/activations"
 # --- 处理参数 ---
 processing:
   # 判断模型通常较大，建议逐个处理以避免显存问题。
-  batch_size: 1
+  batch_size: 2
   # 运行分类器模型的设备。如果使用了 device_map: "auto"，此项将被忽略。
   device: "cuda"
 
