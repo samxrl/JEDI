@@ -50,7 +50,7 @@ class Scorer:
         # 将变换矩阵和向量也移动到指定设备
         W, mu = transform
         self.transform = (
-            W.to(device, non_blocking=True) if W is not in None else None,
+            W.to(device, non_blocking=True) if W is not None else None,
             mu.to(device, non_blocking=True)
         )
         self.theta = theta
