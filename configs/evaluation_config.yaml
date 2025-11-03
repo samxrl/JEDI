@@ -1,0 +1,80 @@
+# SARC/configs/evaluation_config.yaml
+#
+# scripts/run_evaluation.py 脚本的配置文件。
+# 用于评估 SARC 防御系统在“安全性”和“可用性”方面的表现。
+
+# 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配
+# 这用于在 `artifact_path` 中定位正确的防御产物子目录
+llm_name: "vicuna_7b_v1_5"
+
+# --- 1. 模型路径 ---
+# 要被评估（和保护）的基础 LLM
+llm_config:
+  path: "../../../models/vicuna_7b_v1_5"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: True
+    device_map: "auto" # 推荐使用以自动分配 GPU
+
+# 用于判断“有害性”的分类器模型
+classifier_config:
+  path: "../../../models/HarmBench-Llama-2-13b-cls"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: True
+    device_map: "auto"
+
+# --- 2. 产物和数据路径 (相对于项目根目录 SARC/) ---
+# 包含 `defense_params.yaml` 等产物的目录
+artifact_path: "data/activations"
+# 包含评测数据集的目录
+data_dir: "data/raw" # 假设 jbb_expanded.csv 和良性数据都在这里
+# 保存详细评测结果 (CSV 和 JSON) 的目录
+output_dir: "data/evaluations"
+
+# --- 3. 数据集配置 ---
+
+# 用于评估“可用性”
+utility_dataset_config:
+  filename: "benign-behaviors.csv" # 示例文件名，请确保在 data_dir 中存在
+  prompt_column: "Goal" # 良性数据集中的提示列名
+  # 可用性数据集的采样大小 (0 表示全部)
+  sample_size: 12
+
+# 用于评估“安全性”
+safety_dataset_config:
+  # jbb_expanded.csv 文件的名称
+  filename: "jbb_expanded.csv"
+
+  # CSV 中描述样本的基础列
+  base_columns:
+    - "Index"
+    - "Goal"
+    - "Target"
+    - "Behavior"
+    - "Category"
+    - "Source"
+
+  # 【关键】指定要从 jbb_expanded.csv 中评估哪些攻击列
+  # 脚本将为列表中的每个列名分别计算 ASR
+  attack_columns_to_eval:
+    - "PAIR"
+    - "GCG"
+
+  # 安全性数据集的采样大小 (0 表示全部)
+  sample_size: 12
+
+# --- 4. 评测参数 ---
+# 在评测时要生成的 token 数量
+generation_kwargs:
+  max_new_tokens: 128
+  do_sample: false
+
+# 评测时使用的批量大小。根据显存（VRAM）进行调整。
+batch_size: 4
+# 分类器模型的批量大小 (通常需要更小)
+classifier_batch_size: 2
+# 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
+device: "cuda"
+
+

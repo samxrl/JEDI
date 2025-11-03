@@ -52,7 +52,7 @@ class SarcLogitsProcessor(LogitsProcessor):
     在 `generate` 循环的每个 token 生成步骤中被调用。
     """
 
-    def __init__(self, guard_instance, batch_size: int):
+    def __init__(self, guard_instance, batch_size: int, trigger_logs: List[int]):
         """
         初始化 SARC LogitsProcessor。
 
@@ -61,11 +61,19 @@ class SarcLogitsProcessor(LogitsProcessor):
                 对主 Guard 实例的引用，用于访问 scorer, cusum, 和 hook_manager。
             batch_size (int):
                 当前生成请求的批量大小。
+            trigger_logs (List[int]):
+                一个长度为 batch_size 的列表 (由 Guard 实例持有)，
+                用 -1 初始化。此处理器将在此列表中记录*首次*触发的 token 索引。
         """
         self.guard = guard_instance
         self.batch_size = batch_size
         self.device = self.guard.device
         self.is_batch = batch_size > 1
+
+        # --- 新增：用于日志记录 ---
+        self.trigger_logs = trigger_logs  # 这是一个共享列表的引用
+        self.current_step = 0  # 跟踪当前生成的 token 索引 (从 0 开始)
+        # --- 结束新增 ---
 
         # 为这个特定的生成调用初始化一个 CUSUM 状态机
         self.cusum = CusumState(
@@ -90,19 +98,15 @@ class SarcLogitsProcessor(LogitsProcessor):
             torch.FloatTensor: 可能被修改（也可能未被修改）的 logits 分数。
         """
         # 1. 从钩子获取刚刚被捕获的隐藏状态 (阶段 5.3)
-        # 注意：钩子是在模型 forward 传播中、此 logits 处理器运行前触发的
         try:
-            # 形状应为 (B, 1, D) 或 (B, D)
             hidden_state = self.guard.hook_manager.get_last_captured_activation()
             if hidden_state is None:
                 logger.warning("SARC: 未能从 HookManager 获取隐藏状态。跳过本轮检测。")
                 return scores
 
-            # 确保形状为 (B, 1, D) 以便 scorer 处理
             if hidden_state.dim() == 2:
                 hidden_state = hidden_state.unsqueeze(1)  # (B, D) -> (B, 1, D)
 
-            # 确保隐藏状态与 logits 的批量大小一致
             if hidden_state.shape[0] != scores.shape[0]:
                 logger.error(f"SARC: 隐藏状态批量大小 ({hidden_state.shape[0]}) 与 "
                              f"Logits 批量大小 ({scores.shape[0]}) 不匹配。")
@@ -116,11 +120,17 @@ class SarcLogitsProcessor(LogitsProcessor):
         s_t, r_t = self.guard.scorer.calculate_scores(hidden_state)
 
         # 3. 更新 CUSUM 状态机 (阶段 5.4)
-        # `triggered_indices` 是一个布尔张量 (B,)，指示哪些序列 *在这一步* 触发了警报
         triggered_indices = self.cusum.update(r_t)
 
-        # 4. 激活干预 (阶段 5.5, 6.1)
+        # 4. 激活干预并记录触发步骤 (阶段 5.5, 6.1)
         if torch.any(triggered_indices):
+            # --- 新增：记录首次触发的步骤 ---
+            for i in range(self.batch_size):
+                # 如果此序列在本步触发 且 之前未被激活
+                if triggered_indices[i] and not self.intervention_active[i]:
+                    self.trigger_logs[i] = self.current_step
+            # --- 结束新增 ---
+
             # 更新我们的状态，标记哪些序列 *从现在开始* 需要干预
             self.intervention_active |= triggered_indices.to(self.device)
 
@@ -130,8 +140,14 @@ class SarcLogitsProcessor(LogitsProcessor):
                 self.guard.intervention_func,
                 self.intervention_active
             )
-            logger.info(f"SARC: CUSUM 触发警报。激活以下序列的干预: "
-                        f"{triggered_indices.nonzero(as_tuple=True)[0].tolist()}")
+            # 仅在日志级别为 DEBUG 时记录，以避免刷屏
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"SARC: CUSUM 在第 {self.current_step} 步触发。激活以下序列的干预: "
+                             f"{triggered_indices.nonzero(as_tuple=True)[0].tolist()}")
+
+        # --- 新增：递增生成步骤计数器 ---
+        self.current_step += 1
+        # --- 结束新增 ---
 
         return scores
 
@@ -174,6 +190,10 @@ class Guard:
         self.model: Optional[Module] = None
         self.hook_manager: Optional[HookManager] = None
         self.original_generate: Optional[Callable] = None
+
+        # --- 新增：用于在 Guard 和 SarcLogitsProcessor 之间传递日志列表 ---
+        self.current_batch_trigger_logs: Optional[List[int]] = None
+        # --- 结束新增 ---
 
         logger.info(f"Guard 实例已初始化。将在第 {layer_id} 层运行。")
         logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}")
@@ -246,6 +266,22 @@ class Guard:
             device=device
         )
 
+    # --- 新增：用于设置和清理日志目标的方法 ---
+    def set_batch_log_target(self, log_list: List[int]):
+        """
+        在 `_guarded_generate` 之前，从外部 (run_evaluation.py) 设置一个列表
+        用于 SarcLogitsProcessor 记录触发步骤。
+        """
+        self.current_batch_trigger_logs = log_list
+
+    def clear_batch_log_target(self):
+        """
+        在 `_guarded_generate` 之后，清理日志目标引用。
+        """
+        self.current_batch_trigger_logs = None
+
+    # --- 结束新增 ---
+
     @contextmanager
     def attach(self, model: Module):
         """
@@ -303,6 +339,7 @@ class Guard:
         self.model = None
         self.hook_manager = None
         self.original_generate = None
+        self.clear_batch_log_target()  # 确保也清理了日志目标
         logger.info("Guard 已成功分离。")
 
     def _guarded_generate(self, *args, **kwargs) -> Any:
@@ -313,7 +350,6 @@ class Guard:
             raise RuntimeError("Guard 尚未附加到模型。请使用 `with guard.attach(model): ...`。")
 
         # 1. 确定批量大小
-        # `input_ids` 通常是第一个位置参数或一个关键字参数
         input_ids = None
         if 'input_ids' in kwargs:
             input_ids = kwargs['input_ids']
@@ -321,7 +357,6 @@ class Guard:
             input_ids = args[0]
 
         if input_ids is None:
-            # 可能是 "inputs"
             if 'inputs' in kwargs:
                 input_ids = kwargs['inputs']
             elif len(args) > 0 and isinstance(args[0], torch.Tensor):
@@ -336,21 +371,37 @@ class Guard:
         self.hook_manager.clear_captured_activations()
         self.hook_manager.clear_intervention_state()
 
-        # 3. 初始化 SARC LogitsProcessor
-        sarc_processor = SarcLogitsProcessor(guard_instance=self, batch_size=batch_size)
+        # 3. 初始化 SARC LogitsProcessor，并传入日志列表
+        # --- 修改：从 Guard 实例获取日志列表 ---
+        trigger_logs = self.current_batch_trigger_logs
+        if trigger_logs is None:
+            logger.warning("SARC: Guarded generate 被调用，但没有设置批量日志目标 "
+                           "(set_batch_log_target)。触发步骤将不会被记录。")
+            # 创建一个临时的 dummy 列表以防止崩溃
+            trigger_logs = [-1] * batch_size
+        elif len(trigger_logs) != batch_size:
+            logger.error(f"SARC: 提供的日志列表长度 ({len(trigger_logs)}) 与 "
+                         f"批量大小 ({batch_size}) 不匹配。")
+            # 同样使用 dummy 列表
+            trigger_logs = [-1] * batch_size
+
+        sarc_processor = SarcLogitsProcessor(
+            guard_instance=self,
+            batch_size=batch_size,
+            trigger_logs=trigger_logs  # 传入共享列表
+        )
+        # --- 结束修改 ---
 
         # 4. 将我们的处理器注入到 `generate` 调用中
-        # 获取或创建 LogitsProcessorList
         processor_list = kwargs.get('logits_processor')
         if processor_list is None:
             processor_list = LogitsProcessorList()
         elif not isinstance(processor_list, LogitsProcessorList):
-            processor_list = LogitsProcessorList(processor_list)
+            processor_list = LogitsProcessorList([processor_list])  # 确保是列表
 
         processor_list.append(sarc_processor)
         kwargs['logits_processor'] = processor_list
 
         # 5. 调用原始的 `generate` 方法
-        # 我们的 SarcLogitsProcessor 将在 `generate` 内部
-        # 的每一步被自动调用
         return self.original_generate(*args, **kwargs)
+

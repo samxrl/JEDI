@@ -2,64 +2,31 @@
 """
 HookManager (钩子管理器)
 
-该文件实现了 `HookManager` 类，其核心职责是在 PyTorch 模型
-(特别是 Hugging Face Transformers 模型) 的特定层上注册、管理和移除钩子。
+该文件定义了 `HookManager` 类，是 `Guard` 的一个内部组件。
 
-根据“方法流程.md”，防御系统需要在两个时刻与模型交互：
-1.  **读取 (Read)**: 在每个 token 生成步骤中，需要从目标层读取
-    隐藏状态 (h_t)，以便 `Scorer` 计算风险分数 (阶段 5.3)。
-    这通过注册一个 `register_forward_hook` 来实现。
-2.  **写入 (Write/Intervention)**: 当 CUSUM 触发警报时，
-    需要向目标层注入干预向量 (v_l) (阶段 6.1)。
-    这也通过 `register_forward_hook` 实现，但该钩子会修改
-    `output` 张量。
-
-`HookManager` 封装了查找层、注册钩子、存储句柄 (handle) 以及
-在防御结束时清理所有钩子的复杂逻辑。
+核心职责:
+1.  充当模型 (`model`) 和 SARC 处理器 (`SarcLogitsProcessor`) 之间的桥梁。
+2.  提供 `attach_read_hook` 方法，在目标层注册一个 PyTorch
+    `register_forward_hook`，用于“读取”隐藏状态。
+3.  提供 `set_intervention_state` 方法，允许 SARC 处理器
+    动态地请求在下一
+    个 forward 传递中“写入”（即干预）隐藏状态。
+4.  管理读/写钩子的句柄 (`handle`)，并在 `detach` 时正确移除它们，
+    防止内存泄漏并恢复模型原始行为。
 """
 
 import torch
 from torch.nn import Module
-from typing import Callable, Optional, List, Any, Tuple
+from typing import Callable, Optional, List, Dict, Any
 import logging
 
+# 设置一个日志记录器
 logger = logging.getLogger(__name__)
-
-
-def _find_target_layer(model: Module, layer_id: int) -> Optional[Module]:
-    """
-    一个辅助函数，用于在常见的 HF 模型结构中查找目标层模块。
-
-    Args:
-        model (Module): Hugging Face 模型。
-        layer_id (int): 目标层的索引。
-
-    Returns:
-        Optional[Module]: 找到的 PyTorch 模块，如果未找到则返回 None。
-    """
-    # 尝试 LLaMA, Mistral, Gemma 等模型的常见结构
-    if hasattr(model, 'model') and hasattr(model.model, 'layers'):
-        if 0 <= layer_id < len(model.model.layers):
-            return model.model.layers[layer_id]
-
-    # 尝试 GPT-2, OPT 等模型的常见结构
-    if hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
-        if 0 <= layer_id < len(model.transformer.h):
-            return model.transformer.h[layer_id]
-
-    # 尝试作为备选的 'layers' 属性
-    if hasattr(model, 'layers'):
-        if 0 <= layer_id < len(model.layers):
-            return model.layers[layer_id]
-
-    logger.warning(f"无法在模型 {type(model).__name__} 中自动定位第 {layer_id} 层。 "
-                   f"请检查模型结构并可能需要调整 _find_target_layer 帮助函数。")
-    return None
 
 
 class HookManager:
     """
-    管理模型钩子的注册、状态和移除。
+    管理 PyTorch 钩子 (hooks) 以在模型的前向传播中读取和写入激活。
     """
 
     def __init__(self, model: Module, layer_id: int, device: str = 'cpu'):
@@ -67,120 +34,197 @@ class HookManager:
         初始化钩子管理器。
 
         Args:
-            model (Module): 要附加钩子的模型。
-            layer_id (int): 目标层的索引。
-            device (str): 目标设备。
+            model (Module):
+                要附加钩子的 Hugging Face 模型。
+            layer_id (int):
+                目标层的索引 (例如，Llama 模型的 `model.layers[layer_id]`)。
+            device (str):
+                运行计算的设备。
         """
         self.model = model
         self.layer_id = layer_id
         self.device = device
-        self.target_layer = _find_target_layer(model, layer_id)
 
-        if self.target_layer is None:
-            raise ValueError(f"无法在模型中找到第 {layer_id} 层。")
+        # 尝试自动定位模型中的解码器层列表
+        self.layer_module = self._find_target_layer(model, layer_id)
+        if self.layer_module is None:
+            msg = f"无法在模型中定位到第 {layer_id} 层。请检查模型结构和 layer_id。"
+            logger.error(msg)
+            raise ValueError(msg)
 
-        # 存储 PyTorch 钩子句柄 (handle)，以便后续移除
-        self._read_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
-        self._intervention_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
+        # 句柄 (Handles) 用于在之后移除钩子
+        self.read_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
+        self.write_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
 
-        # 存储从读钩子捕获的激活
-        self._captured_activations: List[torch.Tensor] = []
+        # 状态变量
+        self.captured_activations: List[torch.Tensor] = []
+        self.intervention_function: Optional[Callable] = None
+        self.intervention_indices: Optional[torch.Tensor] = None
 
-        # 存储干预钩子的状态
-        self._intervention_func: Optional[Callable] = None
-        self._intervention_indices: Optional[torch.Tensor] = None
-
-    def _read_hook(self, module: Module, inputs: Tuple[Any, ...], outputs: Tuple[Any, ...]):
+    def _find_target_layer(self, model: Module, layer_id: int) -> Optional[Module]:
         """
-        *读钩子*的实现。
-        此函数在 `target_layer` 的前向传播*之后*被调用。
-        它捕获输出的隐藏状态并将其存储。
+        尝试在模型中找到目标层模块。
+        这适用于 Llama, Mistral, Gemma 等常见架构。
         """
-        # `outputs` 通常是一个元组，第一个元素是隐藏状态
-        hidden_state = outputs[0]
+        try:
+            if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+                # 适用于 Llama, Mistral, Gemma, Phi-3 等
+                return model.model.layers[layer_id]
+            elif hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+                # 适用于 GPT-2, GPT-NeoX
+                return model.transformer.h[layer_id]
+            elif hasattr(model, 'layers'):
+                # 备用，如果 model.layers 直接在顶层
+                return model.layers[layer_id]
+            else:
+                logger.warning("未知的模型架构。无法自动定位 'layers' 属性。")
+                return None
+        except IndexError:
+            logger.error(f"层索引 {layer_id} 超出范围。模型只有 "
+                         f"{len(model.model.layers)} 层。")
+            return None
+        except Exception as e:
+            logger.error(f"在定位目标层时出错: {e}", exc_info=True)
+            return None
 
-        # 我们只关心序列中的最后一个 token 的隐藏状态，
-        # 因为这是用于预测 *下一个* token 的状态。
-        # 形状: (B, SeqLen, D) -> (B, 1, D)
-        last_token_hidden_state = hidden_state[:, -1:, :].detach().to(self.device, non_blocking=True)
-        self._captured_activations.append(last_token_hidden_state)
-
-    def _intervention_hook(self, module: Module, inputs: Tuple[Any, ...], outputs: Tuple[Any, ...]):
+    def _read_hook(self, module: Module, args: tuple, output: Any):
         """
-        *干预钩子*的实现。
-        此函数也在 `target_layer` 的前向传播*之后*被调用。
-        如果干预被激活，它会*修改* `outputs` 元组。
+        “读”钩子 (Forward Hook)。
+        在目标层的前向传播*之后*执行，用于捕获其输出的隐藏状态。
         """
-        if self._intervention_func is not None and self._intervention_indices is not None:
-            # `self._intervention_func` 是 `create_intervention_hook_func`
-            # 返回的函数，它会就地修改 `outputs`。
-            # 我们传递 `outputs` 和要修改的批量索引。
-            return self._intervention_func(module, inputs, outputs, self._intervention_indices)
+        hidden_state = None
+        if isinstance(output, tuple):
+            # 大多数 HF 模型 (Llama, etc.) 的层输出是元组 (hidden_state, caches, ...)
+            hidden_state = output[0]
+        else:
+            # 某些模型可能直接输出张量
+            hidden_state = output
 
-        # 如果未激活干预，则不执行任何操作
-        return outputs
+        if hidden_state is None:
+            logger.warning(f"SARC 读钩子在第 {self.layer_id} 层收到了空的输出。")
+            return
+
+        # --- 错误修复：---
+        # 区分 3D (预填充) 和 2D (自回归) 的情况
+        final_hidden_state_3d = None
+
+        if hidden_state.dim() == 3:
+            # 3D: (batch_size, seq_len, hidden_dim) - 这是预填充阶段
+            # 我们只关心序列中的最后一个 token
+            final_hidden_state_3d = hidden_state[:, -1:, :].detach().to(self.device, non_blocking=True)
+
+        elif hidden_state.dim() == 2:
+            # 2D: (batch_size, hidden_dim) - 这是自回归阶段 (seq_len=1)
+            # 它已经是最后一个 token，我们只需添加 'seq_len' 维度
+            final_hidden_state_3d = hidden_state.unsqueeze(1).detach().to(self.device, non_blocking=True)
+
+        else:
+            # 异常情况
+            logger.warning(f"SARC 读钩子: 收到意外的隐藏状态维度: "
+                           f"{hidden_state.dim()}。跳过捕获。")
+            return
+
+        # 存储形状一致的 (batch_size, 1, hidden_dim) 张量
+        self.captured_activations.append(final_hidden_state_3d)
+
+        # 动态附加“写”钩子 (如果已被请求)
+        self._dynamically_attach_write_hook(module)
+
+    def _dynamically_attach_write_hook(self, module: Module):
+        """
+        如果干预已被请求，则附加“写”钩子 (Forward Pre-Hook)。
+        “写”钩子在 `forward` 方法*之前*执行，用于修改其输入。
+        """
+        if self.intervention_function and self.write_hook_handle is None:
+            # logger.debug(f"在第 {self.layer_id} 层动态附加干预钩子。")
+            self.write_hook_handle = module.register_forward_pre_hook(
+                self._write_hook
+            )
+
+    def _write_hook(self, module: Module, args: tuple) -> tuple:
+        """
+        “写”钩子 (Forward Pre-Hook)。
+        在目标层的前向传播*之前*执行，用于修改输入 `args[0]` (即 hidden_state)。
+        """
+        if self.intervention_function is None or self.intervention_indices is None:
+            return args
+
+        # 警告：此处的修改是就地 (in-place) 的
+        # `args[0]` 是即将进入该层的 `hidden_state`
+        hidden_state = args[0]
+
+        # 应用干预函数 (例如 ActAdd)
+        # intervention_function 负责只修改 self.intervention_indices
+        # 标记为 True 的那些序列。
+        #
+        # *** 关键修复点 ***
+        # 这里的调用必须传递 `hidden_state` 和 `self.intervention_indices`
+        # 才能匹配 `interventions.py` 中 `hook_func` 的签名
+        modified_hidden_state = self.intervention_function(
+            hidden_state, self.intervention_indices
+        )
+
+        # 返回被修改后的输入元组
+        # (这假设 hidden_state 是 args 中的第一个元素)
+        return (modified_hidden_state,) + args[1:]
 
     def attach_read_hook(self):
         """
-        注册*读钩子*，用于捕获激活。
+        在目标层上注册永久的“读”钩子。
         """
-        if self._read_hook_handle is not None:
-            logger.warning("读钩子已注册。")
-            return
+        if self.read_hook_handle:
+            logger.warning("“读”钩子已被附加。将先移除旧钩子。")
+            self.read_hook_handle.remove()
 
-        self._read_hook_handle = self.target_layer.register_forward_hook(self._read_hook)
-        logger.debug(f"读钩子已附加到第 {self.layer_id} 层。")
+        self.read_hook_handle = self.layer_module.register_forward_hook(
+            self._read_hook
+        )
+        # logger.debug(f"“读”钩子已附加到第 {self.layer_id} 层。")
 
     def set_intervention_state(self, func: Callable, indices: torch.Tensor):
         """
-        设置下一次前向传播时要执行的干预。
-
-        Args:
-            func (Callable):
-                从 `interventions.py` 创建的干预函数。
-            indices (torch.Tensor):
-                一个布尔张量 (B,)，指示哪些批量索引需要被干预。
+        由 SarcLogitsProcessor 调用，用于请求在下一个步骤激活干预。
         """
-        self._intervention_func = func
-        self._intervention_indices = indices
-
-        # 确保干预钩子只在需要时被注册一次
-        if self._intervention_hook_handle is None:
-            self._intervention_hook_handle = self.target_layer.register_forward_hook(self._intervention_hook)
-            logger.debug(f"干预钩子已动态附加到第 {self.layer_id} 层。")
+        self.intervention_function = func
+        self.intervention_indices = indices  # (B,) bool tensor
 
     def clear_intervention_state(self):
         """
-        清除干预状态。这不会移除钩子句柄，只是使其在下次调用时失效。
+        在 `generate` 调用开始时调用，重置干预状态。
         """
-        self._intervention_func = None
-        self._intervention_indices = None
+        self.intervention_function = None
+        self.intervention_indices = None
 
-    def remove_all_hooks(self):
-        """
-        移除所有已注册的 PyTorch 钩子，以清理模型。
-        """
-        if self._read_hook_handle:
-            self._read_hook_handle.remove()
-            self._read_hook_handle = None
-            logger.debug("读钩子已移除。")
-
-        if self._intervention_hook_handle:
-            self._intervention_hook_handle.remove()
-            self._intervention_hook_handle = None
-            logger.debug("干预钩子已移除。")
+        # “写”钩子是动态附加的，我们需要在每轮开始时将其移除
+        if self.write_hook_handle:
+            # logger.debug(f"在第 {self.layer_id} 层清理干预钩子。")
+            self.write_hook_handle.remove()
+            self.write_hook_handle = None
 
     def get_last_captured_activation(self) -> Optional[torch.Tensor]:
         """
-        获取最近一次捕获的激活。
+        由 SarcLogitsProcessor 调用，用于获取最近一次“读”钩子捕获的激活。
         """
-        if not self._captured_activations:
+        if not self.captured_activations:
             return None
-        # 立即清除，确保每个 token 只被处理一次
-        return self._captured_activations.pop()
+        # 钩子按顺序触发，处理器按顺序消耗
+        return self.captured_activations.pop(0)
 
     def clear_captured_activations(self):
         """
-        清除激活缓冲区。
+        在 `generate` 调用开始时调用，清空上一轮的激活缓存。
         """
-        self._captured_activations.clear()
+        self.captured_activations.clear()
+
+    def remove_all_hooks(self):
+        """
+        在 `Guard.detach` 时调用，彻底清理所有钩子。
+        """
+        if self.read_hook_handle:
+            self.read_hook_handle.remove()
+            self.read_hook_handle = None
+
+        self.clear_intervention_state()  # 这会移除 write_hook_handle
+        self.clear_captured_activations()
+        # logger.debug(f"第 {self.layer_id} 层的所有钩子已移除。")
+

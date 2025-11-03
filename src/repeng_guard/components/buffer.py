@@ -13,6 +13,7 @@
 
 from collections import deque
 from typing import List, Dict, Any
+import torch
 
 
 class CommitBuffer:
