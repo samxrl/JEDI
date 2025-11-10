@@ -39,67 +39,56 @@ def create_intervention_hook_func(
 
     Returns:
         Callable:
-            一个 PyTorch 钩子函数。该函数接收 (module, inputs, outputs, indices)
-            并返回修改后的 `outputs`。
+            一个 PyTorch 钩子函数。
+            *** 修改 ***:
+            此闭包现在匹配 pre-hook 的调用方式 (由 hook_manager._write_hook 调用)，
+            直接接收 (hidden_state, indices) 并返回 (modified_hidden_state)。
     """
 
     # 预先计算加法向量，并将其移动到目标设备
     # `vector` 是从产物中加载的，可能在 CPU 上
     additive_vector = (alpha * vector).to(device)
 
+    # *** 这是修改后的函数签名 ***
     def hook_func(
-            module: Module,
-            inputs: Tuple[Any, ...],
-            outputs: Tuple[Any, ...],
-            indices: torch.Tensor
-    ) -> Tuple[Any, ...]:
+            hidden_state: torch.Tensor,  # 接收来自 pre-hook (args[0]) 的 hidden_state
+            indices: torch.Tensor        # 接收来自 hook_manager 的 indices
+    ) -> torch.Tensor:                   # 返回修改后的 hidden_state
         """
-        实际的 PyTorch 钩子实现。
+        实际的 PyTorch 钩子实现 (适配 pre-hook)。
 
         Args:
-            module (Module): 钩子附加到的模块。
-            inputs (Tuple[Any, ...]): 模块的输入。
-            outputs (Tuple[Any, ...]): 模块的输出 (通常是 (hidden_state, ...))。
+            hidden_state (torch.Tensor):
+                模块的输入 hidden_state (B, SeqLen, D)。
             indices (torch.Tensor):
                 一个布尔张量 (B,)，指示哪些批量索引需要被干预。
 
         Returns:
-            Tuple[Any, ...]: 修改后的 outputs 元组。
+            torch.Tensor: 修改后的 hidden_state。
         """
         try:
-            # 1. 复制一份 `outputs` 元组，因为它是不可变的
-            # (注意: 我们只复制元组结构，底层的张量仍然是引用)
-            new_outputs = list(outputs)
-
-            # 2. `hidden_state` 是 `outputs` 的第一个元素
-            hidden_state = new_outputs[0]  # 形状 (B, SeqLen, D)
-
-            # 3. 确保加法向量与 hidden_state 的类型和设备匹配
+            # 1. 确保加法向量与 hidden_state 的类型和设备匹配
             add_vec_typed = additive_vector.to(hidden_state.dtype, non_blocking=True)
 
-            # 4. 只在最后一个 token 位置 (SeqLen-1) 和
+            # 2. 只在最后一个 token 位置 (SeqLen-1) 和
             #    被 `indices` 标记的批量索引处添加向量
 
-            # 形状 (B, SeqLen, D)
-            # `indices` 形状 (B,)
-            # 我们只想修改 `hidden_state[indices, -1, :]`
-
-            # 为了正确广播，我们需要将 add_vec_typed (D,) 扩展为 (1, D)
-            # 并将其添加到 (N_triggered, D) 的切片上
+            # 在自回归生成时 (SeqLen=1)，-1 索引是正确的。
+            # add_vec_typed (D,) -> add_vec_expanded (1, D)
             add_vec_expanded = add_vec_typed.unsqueeze(0)
 
+            # 就地修改 (in-place modification)
+            # `hidden_state` 是可变的，这会修改
+            # hook_manager._write_hook 中的 `hidden_state` 变量
             hidden_state[indices, -1, :] = hidden_state[indices, -1, :] + add_vec_expanded
 
-            # 5. 将修改后的 hidden_state 放回 new_outputs 列表
-            new_outputs[0] = hidden_state
-
-            # 6. 返回修改后的元组
-            return tuple(new_outputs)
+            # 3. 返回修改后的 hidden_state
+            return hidden_state
 
         except Exception as e:
             logger.error(f"SARC 干预钩子执行失败: {e}", exc_info=True)
-            # 如果失败，返回原始输出，避免使模型崩溃
-            return outputs
+            # 如果失败，返回原始 hidden_state，避免使模型崩溃
+            return hidden_state
 
     # 返回这个内部函数，它将被注册为钩子
     return hook_func

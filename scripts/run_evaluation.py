@@ -343,7 +343,7 @@ def calculate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
     harmful_count = (df['label'] == 'yes').sum()
     rate = harmful_count / total
 
-    return {"rate": rate, "total": total, "harmful_count": harmful_count}
+    return {"rate": rate, "total": int(total), "harmful_count": int(harmful_count)}
 
 
 def main():
