@@ -134,16 +134,24 @@ class SarcLogitsProcessor(LogitsProcessor):
             # 更新我们的状态，标记哪些序列 *从现在开始* 需要干预
             self.intervention_active |= triggered_indices.to(self.device)
 
-            # 告诉 HookManager 在 *下一次* forward 传递时
-            # 对已触发的序列应用干预钩子
-            self.guard.hook_manager.set_intervention_state(
-                self.guard.intervention_func,
-                self.intervention_active
-            )
             # 仅在日志级别为 DEBUG 时记录，以避免刷屏
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"SARC: CUSUM 在第 {self.current_step} 步触发。激活以下序列的干预: "
                              f"{triggered_indices.nonzero(as_tuple=True)[0].tolist()}")
+
+        # --- [BUG FIX START] ---
+        # 缺陷：必须在每一步都重新设置干预状态，只要干预是激活的，
+        # 而不仅仅是在 CUSUM 触发的那个瞬间。
+        #
+        # 检查持久的 `intervention_active` 状态，而不是瞬时的 `triggered_indices`。
+        if torch.any(self.intervention_active):
+            # 告诉 HookManager 在 *下一次* forward 传递时
+            # 对所有已激活的序列应用干预钩子
+            self.guard.hook_manager.set_intervention_state(
+                self.guard.intervention_func,
+                self.intervention_active
+            )
+        # --- [BUG FIX END] ---
 
         # --- 新增：递增生成步骤计数器 ---
         self.current_step += 1
@@ -248,7 +256,13 @@ class Guard:
         transform_early = artifacts['transforms']['early_window'][layer_id]
         intervention_vector = artifacts['intervention_vectors'][layer_id]
         # 假设 alpha (干预强度) 也是一个可配置参数，这里使用一个合理的默认值
-        alpha = params.get('alpha', 10)
+        # [!] 从 evaluation_config.yaml 或 defense_params.yaml 获取 alpha
+        alpha = params.get('alpha', 10.0) # 尝试从 defense_params 获取
+        if 'intervention_alpha' in params: # 备用键
+             alpha = params.get('intervention_alpha', 10.0)
+
+        logger.info(f"使用干预强度 (alpha): {alpha}")
+
         intervention_func = create_intervention_hook_func(
             vector=intervention_vector,
             alpha=alpha,
@@ -406,4 +420,3 @@ class Guard:
 
         # 5. 调用原始的 `generate` 方法
         return self.original_generate(*args, **kwargs)
-
