@@ -121,6 +121,7 @@ def calculate_dual_transforms(benign_activations: dict, whitening_config: dict) 
                 H_benign = benign_activations[layer][window_name].to(torch.float32).cuda()
                 mu = H_benign.mean(dim=0)
                 W = None
+                W_inv = None
 
                 if whitening_enabled:
                     H_centered = H_benign - mu
@@ -135,10 +136,18 @@ def calculate_dual_transforms(benign_activations: dict, whitening_config: dict) 
                     D_inv_sqrt = torch.diag(1.0 / torch.sqrt(eigenvalues))
                     W = D_inv_sqrt @ eigenvectors.T
 
+                    D_sqrt = torch.diag(torch.sqrt(eigenvalues))
+                    W_inv = eigenvectors @ D_sqrt
+
+                transform_tuple = (
+                    W.cpu() if W is not None else None,
+                    mu.cpu(),
+                    W_inv.cpu() if W_inv is not None else None
+                )
                 if window_name == 'early_window':
-                    transforms_early[layer] = (W.cpu() if W is not None else None, mu.cpu())
+                    transforms_early[layer] = transform_tuple
                 else:
-                    transforms_cont[layer] = (W.cpu() if W is not None else None, mu.cpu())
+                    transforms_cont[layer] = transform_tuple
             else:
                 logging.warning(f"第 {layer} 层缺少 '{window_name}' 的良性激活，无法计算该窗口的变换。")
 
@@ -150,7 +159,7 @@ def apply_transform(activations: torch.Tensor, transform: tuple) -> torch.Tensor
     将变换（中心化和可选的白化）应用于给定的激活张量。
     支持 2D (N, D) 或 3D (B, N, D) 张量。
     """
-    W, mu = transform
+    W, mu, _ = transform
     # 确保在同一设备上操作
     device = activations.device
     mu_device = mu.to(device)

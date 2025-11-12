@@ -2,21 +2,24 @@
 """
 干预 (Interventions)
 
-该文件实现了 SARC 防御机制中的“干预”动作，
-对应于“方法流程.md”文档中的阶段 6。
+[!] 此文件已修改，以修复“空间不匹配”问题。
 
 核心功能是 `create_intervention_hook_func`，它创建了一个
-PyTorch 钩子函数，用于执行“激活添加” (ActAdd) 注入。
-当 CUSUM 警报触发时，`Guard` 类会通过 `HookManager`
-注册这个钩子，将模型在目标层的激活状态 (h_t) 转向
-预先计算好的“拒绝”方向 (v_l)。
+PyTorch 钩子函数。
+
+当 CUSUM 警报触发时，此钩子将执行一个完整的“变换-干预-反转” (h -> z -> z' -> h') 流程:
+1.  (h_t -> z_t): 将原始隐藏状态 h_t 变换到白化空间 z_t。
+2.  (z_t -> z'_t): 在白化空间中应用 ActAdd: z'_t = z_t + (alpha * v_l)。
+3.  (z'_t -> h'_t): 将干预后的 z'_t 反向变换回原始空间 h'_t。
 """
 
 import torch
 from torch.nn import Module
-from typing import Callable, Tuple, Any
-
+from typing import Callable, Tuple, Any, Optional
 import logging
+
+# [!] 新增导入
+from .components.representation import apply_transform, invert_transform
 
 logger = logging.getLogger(__name__)
 
@@ -24,38 +27,47 @@ logger = logging.getLogger(__name__)
 def create_intervention_hook_func(
         vector: torch.Tensor,
         alpha: float,
+        transform: Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]],  # [!] 接收 (W, mu, W_inv)
         device: str
 ) -> Callable:
     """
-    创建一个闭包函数 (hook function)，用于执行 ActAdd 干预。
+    创建一个闭包函数 (hook function)，用于在 *白化空间* 中执行 ActAdd 干预。
 
     Args:
         vector (torch.Tensor):
             干预向量 (v_l)，即“拒绝”方向。形状为 (D,)。
         alpha (float):
-            干预强度。h_t 将被修改为 h_t + (alpha * v_l)。
+            干预强度。
+        transform (Tuple):
+            用于干预向量 $v_l$ 所在空间（例如 'early_window'）的
+            (W, mu, W_inv) 变换元组。
         device (str):
             运行计算的设备。
 
     Returns:
         Callable:
             一个 PyTorch 钩子函数。
-            *** 修改 ***:
-            此闭包现在匹配 pre-hook 的调用方式 (由 hook_manager._write_hook 调用)，
-            直接接收 (hidden_state, indices) 并返回 (modified_hidden_state)。
     """
 
     # 预先计算加法向量，并将其移动到目标设备
-    # `vector` 是从产物中加载的，可能在 CPU 上
     additive_vector = (alpha * vector).to(device)
+
+    # [!] 新增: 将变换组件预先移动到设备
+    W, mu, W_inv = transform
+    transform_gpu = (
+        W.to(device, non_blocking=True) if W is not None else None,
+        mu.to(device, non_blocking=True),
+        W_inv.to(device, non_blocking=True) if W_inv is not None else None
+    )
 
     # *** 这是修改后的函数签名 ***
     def hook_func(
             hidden_state: torch.Tensor,  # 接收来自 pre-hook (args[0]) 的 hidden_state
-            indices: torch.Tensor        # 接收来自 hook_manager 的 indices
-    ) -> torch.Tensor:                   # 返回修改后的 hidden_state
+            indices: torch.Tensor  # 接收来自 hook_manager 的 indices
+    ) -> torch.Tensor:  # 返回修改后的 hidden_state
         """
         实际的 PyTorch 钩子实现 (适配 pre-hook)。
+        执行 (h -> z -> z' -> h') 流程。
 
         Args:
             hidden_state (torch.Tensor):
@@ -67,22 +79,32 @@ def create_intervention_hook_func(
             torch.Tensor: 修改后的 hidden_state。
         """
         try:
-            # 1. 确保加法向量与 hidden_state 的类型和设备匹配
-            add_vec_typed = additive_vector.to(hidden_state.dtype, non_blocking=True)
+            # 0. 如果没有序列需要干预，立即返回
+            if not torch.any(indices):
+                return hidden_state
 
-            # 2. 只在最后一个 token 位置 (SeqLen-1) 和
-            #    被 `indices` 标记的批量索引处添加向量
+            # 1. 确保加法向量与 hidden_state 的类型匹配
+            add_vec_typed = additive_vector.to(hidden_state.dtype)
 
-            # 在自回归生成时 (SeqLen=1)，-1 索引是正确的。
-            # add_vec_typed (D,) -> add_vec_expanded (1, D)
-            add_vec_expanded = add_vec_typed.unsqueeze(0)
+            # 2. (h_t -> z_t) 正向变换 (仅在最后一个 token)
+            # 我们只干预自回归生成中的最后一个 token
+            # [B, SeqLen, D] -> [N_indices, 1, D]
+            last_token_hidden_state = hidden_state[indices, -1:, :]
 
-            # 就地修改 (in-place modification)
-            # `hidden_state` 是可变的，这会修改
-            # hook_manager._write_hook 中的 `hidden_state` 变量
-            hidden_state[indices, -1, :] = hidden_state[indices, -1, :] + add_vec_expanded
+            z_t = apply_transform(last_token_hidden_state, transform_gpu)
 
-            # 3. 返回修改后的 hidden_state
+            # 3. (z_t -> z'_t) 在白化空间中应用干预
+            # add_vec_typed (D,) -> (1, 1, D)
+            z_prime_t = z_t + add_vec_typed.unsqueeze(0)
+
+            # 4. (z'_t -> h'_t) 反向变换回原始空间
+            h_prime_t = invert_transform(z_prime_t, transform_gpu)
+
+            # 5. 就地修改 (in-place modification)
+            # 将 (N_indices, 1, D) 形状的 h_prime_t 写回
+            hidden_state[indices, -1:, :] = h_prime_t.to(hidden_state.dtype)
+
+            # 6. 返回修改后的 hidden_state
             return hidden_state
 
         except Exception as e:

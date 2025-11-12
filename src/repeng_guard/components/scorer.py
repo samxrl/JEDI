@@ -48,10 +48,11 @@ class Scorer:
         """
         self.condition_vector = condition_vector.to(device, non_blocking=True)
         # 将变换矩阵和向量也移动到指定设备
-        W, mu = transform
-        self.transform = (
+        W, mu, W_inv = transform
+        self.transform_gpu = (
             W.to(device, non_blocking=True) if W is not None else None,
-            mu.to(device, non_blocking=True)
+            mu.to(device, non_blocking=True),
+            W_inv.to(device, non_blocking=True) if W_inv is not None else None
         )
         self.theta = theta
         self.device = device
@@ -77,8 +78,8 @@ class Scorer:
             hidden_states = hidden_states.to(self.device, non_blocking=True)
 
         # 1. 对隐藏状态进行标准化（白化/中心化）
-        # hidden_states 形状 (B, 1, D) -> transformed_states 形状 (B, 1, D)
-        transformed_states = apply_transform(hidden_states, self.transform)
+        # hidden_states 形状 (B, 1, D) -> transformed_states 形状 (B, 1, D),使用预先移动到 GPU 的 self.transform_gpu
+        transformed_states = apply_transform(hidden_states, self.transform_gpu)
 
         # 2. 将标准化后的表征投影到条件向量上，得到原始分数 s_t
         # transformed_states 形状 (B, 1, D), condition_vector 形状 (D,)

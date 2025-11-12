@@ -235,22 +235,24 @@ class Guard:
         h = params['h']
 
         # 3. 准备 Scorer (阶段 4.1)
-        transform = artifacts['transforms']['content_window'][layer_id]
+        transform_cont = artifacts['transforms']['content_window'][layer_id]
         condition_vector = artifacts['condition_vectors'][layer_id]
         scorer = Scorer(
             condition_vector=condition_vector,
-            transform=transform,
+            transform=transform_cont,  # [!] 传入 content_window 变换
             theta=theta,
             device=device
         )
 
         # 4. 准备 Intervention (阶段 6.1)
+        transform_early = artifacts['transforms']['early_window'][layer_id]
         intervention_vector = artifacts['intervention_vectors'][layer_id]
         # 假设 alpha (干预强度) 也是一个可配置参数，这里使用一个合理的默认值
-        alpha = params.get('alpha', 1.5)
+        alpha = params.get('alpha', 10)
         intervention_func = create_intervention_hook_func(
             vector=intervention_vector,
             alpha=alpha,
+            transform=transform_early,  # 传入 early_window 变换
             device=device
         )
 

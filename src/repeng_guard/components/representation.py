@@ -42,7 +42,7 @@ def apply_transform(
     Raises:
         ValueError: 如果输入 `hidden_states` 的维度不是 2 或 3，则会引发错误。
     """
-    W, mu = transform
+    W, mu, _ = transform
     device = hidden_states.device
 
     # 确保 mu 和 W (如果存在) 与隐藏状态在同一设备上
@@ -70,3 +70,49 @@ def apply_transform(
     else:
         # 如果 W 为 None，则只返回中心化后的结果
         return centered_states
+
+def invert_transform(
+        transformed_states: torch.Tensor,
+        transform: Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]
+) -> torch.Tensor:
+    """
+    将白化/中心化后的表征 (z_t) 反向变换回原始隐藏状态 (h_t)。
+    执行: h_t = W_inv @ z_t + mu
+
+    Args:
+        transformed_states (torch.Tensor):
+            白化空间中的表征 (z_t)。
+            形状可以是 (N, D) 或 (B, N, D)。
+
+        transform (Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]):
+            一个元组 `(W, mu, W_inv)`。
+
+    Returns:
+        torch.Tensor:
+            原始空间中的隐藏状态 (h_t)，形状与输入相同。
+    """
+    _, mu, W_inv = transform # 解包三元组，忽略 W
+    device = transformed_states.device
+
+    mu_device = mu.to(device)
+
+    # 步骤 1: (可选) 应用反向白化 W_inv @ z_t
+    if W_inv is not None:
+        W_inv_device = W_inv.to(device)
+
+        if transformed_states.dim() == 2:  # 形状 (N, D)
+            # 'nd,cd->nc' -> (N, D) @ (D, D).T = (N, D)
+            # 注意: W_inv 是 (D, D)
+            de_whitened_states = torch.einsum('nd,cd->nc', transformed_states, W_inv_device)
+        elif transformed_states.dim() == 3:  # 形状 (B, N, D)
+            # 'bnd,cd->bnc'
+            de_whitened_states = torch.einsum('bnd,cd->bnc', transformed_states, W_inv_device)
+        else:
+            raise ValueError(f"不支持的隐藏状态维度: {transformed_states.dim()}。只支持 2D 或 3D 张量。")
+    else:
+        # 如果 W_inv 为 None (仅中心化)，则 z_t == h_t - mu
+        de_whitened_states = transformed_states
+
+    # 步骤 2: 加回均值
+    original_states = de_whitened_states + mu_device
+    return original_states
