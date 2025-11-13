@@ -132,41 +132,53 @@ class HookManager:
 
     def _dynamically_attach_write_hook(self, module: Module):
         """
-        如果干预已被请求，则附加“写”钩子 (Forward Pre-Hook)。
-        “写”钩子在 `forward` 方法*之前*执行，用于修改其输入。
+        如果干预已被请求，则附加“写”钩子 (Forward Hook)。
+        “写”钩子在 `forward` 方法*之后*执行，用于修改其输出。
         """
         if self.intervention_function and self.write_hook_handle is None:
             # logger.debug(f"在第 {self.layer_id} 层动态附加干预钩子。")
-            self.write_hook_handle = module.register_forward_pre_hook(
+            # [!] 修改：从 pre_hook 更改为 hook
+            self.write_hook_handle = module.register_forward_hook(
                 self._write_hook
             )
 
-    def _write_hook(self, module: Module, args: tuple) -> tuple:
+    # [!] 修改：更改了函数签名和内部逻辑
+    def _write_hook(self, module: Module, args: tuple, output: Any) -> Any:
         """
-        “写”钩子 (Forward Pre-Hook)。
-        在目标层的前向传播*之前*执行，用于修改输入 `args[0]` (即 hidden_state)。
+        “写”钩子 (Forward Hook)。
+        在目标层的前向传播*之后*执行，用于修改其输出 `output` (即 hidden_state)。
         """
         if self.intervention_function is None or self.intervention_indices is None:
-            return args
+            return output  # [!] 如果未激活干预，必须返回原始 output
 
-        # 警告：此处的修改是就地 (in-place) 的
-        # `args[0]` 是即将进入该层的 `hidden_state`
-        hidden_state = args[0]
+        # 1. 从 output 中提取 hidden_state
+        original_hidden_state = None
+        is_tuple_output = False
 
-        # 应用干预函数 (例如 ActAdd)
-        # intervention_function 负责只修改 self.intervention_indices
-        # 标记为 True 的那些序列。
-        #
-        # *** 关键修复点 ***
-        # 这里的调用必须传递 `hidden_state` 和 `self.intervention_indices`
-        # 才能匹配 `interventions.py` 中 `hook_func` 的签名
+        if isinstance(output, tuple):
+            original_hidden_state = output[0]
+            is_tuple_output = True
+        else:
+            original_hidden_state = output
+
+        if original_hidden_state is None:
+            logger.warning(f"SARC 写钩子在第 {self.layer_id} 层收到了空的输出。")
+            return output
+
+        # 2. 应用干预函数
+        #    intervention_function 负责只修改 self.intervention_indices
+        #    标记为 True 的那些序列。
         modified_hidden_state = self.intervention_function(
-            hidden_state, self.intervention_indices
+            original_hidden_state, self.intervention_indices
         )
 
-        # 返回被修改后的输入元组
-        # (这假设 hidden_state 是 args 中的第一个元素)
-        return (modified_hidden_state,) + args[1:]
+        # 3. 将修改后的 hidden_state 重新打包并返回
+        if is_tuple_output:
+            # [!] 返回修改后的元组
+            return (modified_hidden_state,) + output[1:]
+        else:
+            # [!] 返回修改后的张量
+            return modified_hidden_state
 
     def attach_read_hook(self):
         """
@@ -227,4 +239,3 @@ class HookManager:
         self.clear_intervention_state()  # 这会移除 write_hook_handle
         self.clear_captured_activations()
         # logger.debug(f"第 {self.layer_id} 层的所有钩子已移除。")
-

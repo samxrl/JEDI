@@ -41,7 +41,6 @@ import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from typing import Dict, List
 
-
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -182,15 +181,16 @@ def apply_transform(activations: torch.Tensor, transform: tuple) -> torch.Tensor
 
 def get_diff_vector(pos_activations: torch.Tensor, neg_activations: torch.Tensor) -> torch.Tensor:
     """
-    通过直接计算均值差并归一化来提取方向向量。
+    通过直接计算均值差来提取方向向量 [已移除归一化]。
     """
     mean_diff = pos_activations.mean(dim=0) - neg_activations.mean(dim=0)
+    # [!] 修改：移除归一化
     norm = torch.norm(mean_diff)
     if norm == 0:
-        logging.warning("均值差分向量的范数为零，无法归一化。返回零向量。")
+        logging.warning("均值差分向量的范数为零。返回零向量。")
         return torch.zeros_like(mean_diff)
-    vector = mean_diff / norm
-    return vector
+    # vector = mean_diff / norm # <-- [!] 已移除
+    return mean_diff  # <-- [!] 直接返回原始模长的向量
 
 
 def plot_pca_visualizations(
@@ -338,13 +338,13 @@ def get_model_and_tokenizer(model_path: str, model_kwargs: dict, device: str):
 
 
 def calculate_and_save_token_scores(
-    datasets_to_score: Dict[str, pd.DataFrame],
-    model,
-    tokenizer,
-    transforms: Dict,
-    condition_vectors: Dict,
-    config: Dict,
-    output_dir
+        datasets_to_score: Dict[str, pd.DataFrame],
+        model,
+        tokenizer,
+        transforms: Dict,
+        condition_vectors: Dict,
+        config: Dict,
+        output_dir
 ):
     """
     高效地重新处理样本，计算并保存逐 token 的分数，不再使用 model.generate()。
@@ -400,7 +400,6 @@ def calculate_and_save_token_scores(
 
                 start_idx = find_subsequence(full_ids_list, output_ids_list)
                 output_start_indices.append(start_idx)
-
 
             # 5. 执行一次前向传播
             with torch.no_grad():
@@ -530,10 +529,14 @@ def main():
                     logging.info(f"为提取 v_l 平衡样本: refusal({n_refusal}) vs compliance({n_compliance}). 将使用 {min_samples_v} 个样本。")
                 indices_refusal = torch.randperm(n_refusal)[:min_samples_v]
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_v]
+
+                # [!] 修改：v_l (干预向量) 不再归一化
                 v = get_diff_vector(z_refusal_early[indices_refusal], z_compliance_early[indices_compliance])
                 if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)): v = -v
-                v_norm = torch.norm(v)
-                intervention_vectors[layer] = v / v_norm if v_norm > 0 else v
+                # v_norm = torch.norm(v) # <-- [!] 已移除
+                # intervention_vectors[layer] = v / v_norm if v_norm > 0 else v # <-- [!] 已移除
+                intervention_vectors[layer] = v  # <-- [!] 直接保存带模长的向量
+
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
 
         H_compliance_cont = compliance_activations.get(layer, {}).get('content_window')
@@ -556,33 +559,40 @@ def main():
                     logging.info(f"为提取 c_l 平衡样本: compliance({n_compliance}) vs benign({n_benign}). 将使用 {min_samples_c} 个样本。")
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_c]
                 indices_benign = torch.randperm(n_benign)[:min_samples_c]
+
+                # [!] 修改：c_l (条件向量) 保持归一化
                 c = get_diff_vector(z_compliance_cont[indices_compliance], z_benign_cont[indices_benign])
                 if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)): c = -c
                 c_norm = torch.norm(c)
-                condition_vectors[layer] = c / c_norm if c_norm > 0 else c
+                condition_vectors[layer] = c / c_norm if c_norm > 0 else c  # <-- [!] 保持归一化
+
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
         if log_balancing_info: log_balancing_info = False
 
     if config.get('decoupling', {}).get('enabled', True):
-        logging.info("正在对向量进行去耦合处理...")
+        # [!] 修改：去耦合逻辑
+        logging.info("正在对向量进行去耦合处理 (仅 v_l)...")
         for layer in layers:
             if layer in intervention_vectors and layer in condition_vectors:
-                v_l, c_l = intervention_vectors[layer], condition_vectors[layer]
+                v_l, c_l = intervention_vectors[layer], condition_vectors[layer]  # v_l (带模长), c_l (单位向量)
                 if torch.norm(v_l) > 0 and torch.norm(c_l) > 0:
+                    # [!] 只更新 v_l，并移除对 v_l 的归一化
                     v_l_decoupled = v_l - (c_l @ v_l) * c_l
-                    norm_v = torch.norm(v_l_decoupled)
-                    if norm_v > 0: intervention_vectors[layer] = v_l_decoupled / norm_v
-                    c_l_decoupled = c_l - (v_l @ c_l) * v_l
-                    norm_c = torch.norm(c_l_decoupled)
-                    if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c
+                    intervention_vectors[layer] = v_l_decoupled  # <-- [!] 直接赋值，保留模长
+
+                    # [!] 不再修改 c_l
+                    # c_l_decoupled = c_l - (v_l @ c_l) * v_l
+                    # norm_c = torch.norm(c_l_decoupled)
+                    # if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c
+
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
-                all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
+                all_vectors_for_plot[layer]['c'] = condition_vectors[layer]  # c_l 保持不变
 
     torch.save(intervention_vectors, output_dir / "intervention_vectors.pt")
-    logging.info(f"干预向量已保存到 {output_dir / 'intervention_vectors.pt'}")
+    logging.info(f"干预向量 (v_l) [带模长] 已保存到 {output_dir / 'intervention_vectors.pt'}")
     torch.save(condition_vectors, output_dir / "condition_vectors.pt")
-    logging.info(f"条件向量已保存到 {output_dir / 'condition_vectors.pt'}")
+    logging.info(f"条件向量 (c_l) [已归一化] 已保存到 {output_dir / 'condition_vectors.pt'}")
 
     vis_config = config.get('visualization', {})
     if vis_config.get('enabled', False):
@@ -640,4 +650,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
