@@ -39,7 +39,7 @@ utility_dataset_config:
   filename: "benign-behaviors.csv" # 示例文件名，请确保在 data_dir 中存在
   prompt_column: "Goal" # 良性数据集中的提示列名
   # 可用性数据集的采样大小 (0 表示全部)
-  sample_size: 2
+  sample_size: 20
 
 # 用于评估“安全性”
 safety_dataset_config:
@@ -63,7 +63,7 @@ safety_dataset_config:
     - "prompt_with_random_search"
 
   # 安全性数据集的采样大小 (0 表示全部)
-  sample_size: 36
+  sample_size: 0
 
 # --- 4. 评测参数 ---
 # 在评测时要生成的 token 数量
