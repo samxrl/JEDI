@@ -4,6 +4,10 @@ HookManager (钩子管理器)
 
 该文件定义了 `HookManager` 类，是 `Guard` 的一个内部组件。
 
+[!] 修改：
+- `set_intervention_state` 现在额外接受 `dynamic_alphas` 张量。
+- `_write_hook` 将 `dynamic_alphas` 传递给干预函数。
+
 核心职责:
 1.  充当模型 (`model`) 和 SARC 处理器 (`SarcLogitsProcessor`) 之间的桥梁。
 2.  提供 `attach_read_hook` 方法，在目标层注册一个 PyTorch
@@ -60,6 +64,7 @@ class HookManager:
         self.captured_activations: List[torch.Tensor] = []
         self.intervention_function: Optional[Callable] = None
         self.intervention_indices: Optional[torch.Tensor] = None
+        self.dynamic_alphas: Optional[torch.Tensor] = None  # [!] 新增：存储动态 alpha
 
     def _find_target_layer(self, model: Module, layer_id: int) -> Optional[Module]:
         """
@@ -148,7 +153,10 @@ class HookManager:
         “写”钩子 (Forward Hook)。
         在目标层的前向传播*之后*执行，用于修改其输出 `output` (即 hidden_state)。
         """
-        if self.intervention_function is None or self.intervention_indices is None:
+        # [!] 检查所有必需的状态
+        if (self.intervention_function is None or
+                self.intervention_indices is None or
+                self.dynamic_alphas is None):
             return output  # [!] 如果未激活干预，必须返回原始 output
 
         # 1. 从 output 中提取 hidden_state
@@ -168,8 +176,11 @@ class HookManager:
         # 2. 应用干预函数
         #    intervention_function 负责只修改 self.intervention_indices
         #    标记为 True 的那些序列。
+        # [!] 传递 dynamic_alphas
         modified_hidden_state = self.intervention_function(
-            original_hidden_state, self.intervention_indices
+            original_hidden_state,
+            self.intervention_indices,
+            self.dynamic_alphas
         )
 
         # 3. 将修改后的 hidden_state 重新打包并返回
@@ -193,12 +204,15 @@ class HookManager:
         )
         # logger.debug(f"“读”钩子已附加到第 {self.layer_id} 层。")
 
-    def set_intervention_state(self, func: Callable, indices: torch.Tensor):
+    def set_intervention_state(self, func: Callable, indices: torch.Tensor, dynamic_alphas: torch.Tensor):
         """
         由 SarcLogitsProcessor 调用，用于请求在下一个步骤激活干预。
+
+        [!] 修改：新增 dynamic_alphas 参数。
         """
         self.intervention_function = func
         self.intervention_indices = indices  # (B,) bool tensor
+        self.dynamic_alphas = dynamic_alphas  # [!] (B,) float tensor
 
     def clear_intervention_state(self):
         """
@@ -206,6 +220,7 @@ class HookManager:
         """
         self.intervention_function = None
         self.intervention_indices = None
+        self.dynamic_alphas = None  # [!] 清理 alpha
 
         # “写”钩子是动态附加的，我们需要在每轮开始时将其移除
         if self.write_hook_handle:

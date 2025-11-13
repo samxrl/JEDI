@@ -5,6 +5,12 @@
 该文件定义了 Guard 类，它是 SARC 防御系统的一站式入口，
 封装了所有在线防御逻辑，实现了“方法流程.md”中的阶段 5 和 6。
 
+[!] 修改：
+- `Guard` 和 `SarcLogitsProcessor` 现已更新，
+  支持基于 CUSUM 分数 `A_t` 的动态干预强度 `alpha'`。
+- `SarcLogitsProcessor` 现在处理 `A_t` 的计算和状态跟踪。
+- `CusumState` 不再自动重置。
+
 核心职责:
 1.  通过 `from_artifacts` 类方法加载所有离线准备好的防御产物。
 2.  通过 `attach(model)` 方法，使用 'with' 上下文管理器将自身附加到
@@ -14,18 +20,12 @@
     该处理器在每个生成步骤执行以下操作：
     a. 从 `HookManager` 获取当前 token 的隐藏状态 (由读钩子捕获)。
     b. 调用 `Scorer` 计算单步风险分数 r_t (阶段 4.1, 5.3)。
-    c. 将 r_t 送入 `CusumState` 进行时间序列累积 (阶段 5.4)。
-    d. 如果 `CusumState` 触发警报，则激活干预 (阶段 5.5)。
+    c. [!] 将 r_t 送入 `CusumState`，取回当前的累积分数 A_t (阶段 5.4)。
+    d. [!] 如果 `A_t > h`，则激活干预，并计算动态 `alpha'` (阶段 5.5)。
 5.  通过 `HookManager` 动态注册一个“写钩子”，
     该钩子执行 `interventions.py` 中定义的 ActAdd 注入 (阶段 6.1)。
 6.  在 `with` 块结束时，自动 `detach`，清理所有钩子并恢复
     模型原始的 `generate` 方法。
-
-注意：此实现侧重于检测和干预。`CommitBuffer` (提交缓冲) 逻辑
-(阶段 5.2, 5.5) 在一个标准的、非流式的 `generate` 调用中难以
-精确实现（因为它无法控制何时将 token 真正“显示”给用户）。
-因此，此 `Guard` 实现专注于核心的“检测-触发-转向”流程，
-而 `buffer.py` 模块可用于实现了自定义流式生成的高级框架中。
 """
 
 import torch
@@ -50,6 +50,8 @@ class SarcLogitsProcessor(LogitsProcessor):
     """
     SARC 防御的核心逻辑处理器。
     在 `generate` 循环的每个 token 生成步骤中被调用。
+
+    [!] 修改：实现动态 alpha 计算和干预状态管理。
     """
 
     def __init__(self, guard_instance, batch_size: int, trigger_logs: List[int]):
@@ -70,10 +72,9 @@ class SarcLogitsProcessor(LogitsProcessor):
         self.device = self.guard.device
         self.is_batch = batch_size > 1
 
-        # --- 新增：用于日志记录 ---
+        # --- 日志记录 ---
         self.trigger_logs = trigger_logs  # 这是一个共享列表的引用
         self.current_step = 0  # 跟踪当前生成的 token 索引 (从 0 开始)
-        # --- 结束新增 ---
 
         # 为这个特定的生成调用初始化一个 CUSUM 状态机
         self.cusum = CusumState(
@@ -83,8 +84,19 @@ class SarcLogitsProcessor(LogitsProcessor):
             batch_size=batch_size,
             device=self.device
         )
+
+        # --- [!] 新增：动态 Alpha 和状态管理 ---
         # 跟踪哪些序列已经触发了干预
         self.intervention_active = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        # 从 Guard 获取 CUSUM 阈值
+        self.h = self.guard.h
+        # 从 Guard 获取基础干预强度
+        self.base_alpha = self.guard.base_alpha
+        # 初始化一个张量来存储每个序列的 *当前* 干预强度
+        self.dynamic_alphas = torch.full(
+            (batch_size,), self.base_alpha, device=self.device, dtype=torch.float32
+        )
+        # --- 结束新增 ---
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -102,6 +114,7 @@ class SarcLogitsProcessor(LogitsProcessor):
             hidden_state = self.guard.hook_manager.get_last_captured_activation()
             if hidden_state is None:
                 logger.warning("SARC: 未能从 HookManager 获取隐藏状态。跳过本轮检测。")
+                self.current_step += 1  # [!] 确保步骤计数器增加
                 return scores
 
             if hidden_state.dim() == 2:
@@ -110,52 +123,69 @@ class SarcLogitsProcessor(LogitsProcessor):
             if hidden_state.shape[0] != scores.shape[0]:
                 logger.error(f"SARC: 隐藏状态批量大小 ({hidden_state.shape[0]}) 与 "
                              f"Logits 批量大小 ({scores.shape[0]}) 不匹配。")
+                self.current_step += 1  # [!] 确保步骤计数器增加
                 return scores
 
         except Exception as e:
             logger.error(f"SARC: 获取隐藏状态时出错: {e}", exc_info=True)
+            self.current_step += 1  # [!] 确保步骤计数器增加
             return scores
 
         # 2. 计算风险分数 (阶段 5.3)
         s_t, r_t = self.guard.scorer.calculate_scores(hidden_state)
 
-        # 3. 更新 CUSUM 状态机 (阶段 5.4)
-        triggered_indices = self.cusum.update(r_t)
+        # 3. [!] 更新 CUSUM 状态机并获取 A_t (阶段 5.4)
+        # A_t 是 (B,) 张量，在 CPU 上
+        A_t = self.cusum.update(r_t)
+        A_t_device = A_t.to(self.device)
 
-        # 4. 激活干预并记录触发步骤 (阶段 5.5, 6.1)
-        if torch.any(triggered_indices):
-            # --- 新增：记录首次触发的步骤 ---
-            for i in range(self.batch_size):
-                # 如果此序列在本步触发 且 之前未被激活
-                if triggered_indices[i] and not self.intervention_active[i]:
-                    self.trigger_logs[i] = self.current_step
-            # --- 结束新增 ---
+        # 4. [!] 检查触发器并更新干预状态
 
-            # 更新我们的状态，标记哪些序列 *从现在开始* 需要干预
-            self.intervention_active |= triggered_indices.to(self.device)
+        # 4a. 确定哪些序列 *当前* 应该被触发
+        currently_triggered = A_t_device > self.h
 
-            # 仅在日志级别为 DEBUG 时记录，以避免刷屏
+        # 4b. 确定哪些是 *新* 触发的
+        newly_triggered = currently_triggered & (~self.intervention_active)
+
+        if torch.any(newly_triggered):
+            # 4c. 将新触发的序列标记为 "永久" 激活
+            self.intervention_active |= newly_triggered
+
+            # 4d. 记录 *首次* 触发的步骤
+            for i in newly_triggered.nonzero(as_tuple=True)[0]:
+                idx = i.item()
+                if self.trigger_logs[idx] == -1:  # 再次检查，确保只记录一次
+                    self.trigger_logs[idx] = self.current_step
+
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"SARC: CUSUM 在第 {self.current_step} 步触发。激活以下序列的干预: "
-                             f"{triggered_indices.nonzero(as_tuple=True)[0].tolist()}")
+                logger.debug(f"SARC: CUSUM 在第 {self.current_step} 步 *首次* 触发。激活以下序列: "
+                             f"{newly_triggered.nonzero(as_tuple=True)[0].tolist()}")
 
-        # --- [BUG FIX START] ---
-        # 缺陷：必须在每一步都重新设置干预状态，只要干预是激活的，
-        # 而不仅仅是在 CUSUM 触发的那个瞬间。
-        #
-        # 检查持久的 `intervention_active` 状态，而不是瞬时的 `triggered_indices`。
+        # 5. [!] 如果 *任何* 序列（新的或旧的）处于激活状态，则计算 alpha' 并设置钩子
         if torch.any(self.intervention_active):
-            # 告诉 HookManager 在 *下一次* forward 传递时
-            # 对所有已激活的序列应用干预钩子
-            self.guard.hook_manager.set_intervention_state(
-                self.guard.intervention_func,
-                self.intervention_active
-            )
-        # --- [BUG FIX END] ---
+            active_indices = self.intervention_active
 
-        # --- 新增：递增生成步骤计数器 ---
+            # 5a. 计算动态 Alphas
+            # (A_t / h)  clamped at 1.0
+            ratios = (A_t_device[active_indices] / self.h).clamp(min=1.0)
+            self.dynamic_alphas[active_indices] = self.base_alpha * ratios
+
+            if logger.isEnabledFor(logging.DEBUG):
+                if torch.any(newly_triggered):  # 只在首次触发时记录
+                    active_idxs_list = active_indices.nonzero(as_tuple=True)[0].tolist()
+                    alphas_list = self.dynamic_alphas[active_indices].tolist()
+                    logger.debug(f"  > Alphas: { {idx: alpha for idx, alpha in zip(active_idxs_list, alphas_list)} }")
+
+            # 5b. 告诉 HookManager 在 *下一次* forward 传递时
+            #     应用干预钩子
+            self.guard.hook_manager.set_intervention_state(
+                self.guard.intervention_func,  # 干预函数
+                self.intervention_active,  # (B,) bool, 哪些序列要干预
+                self.dynamic_alphas  # (B,) float, 所有序列的 alpha 值
+            )
+
+        # 6. 递增生成步骤计数器
         self.current_step += 1
-        # --- 结束新增 ---
 
         return scores
 
@@ -173,6 +203,7 @@ class Guard:
             mu_hat: float,
             kappa: float,
             h: float,
+            base_alpha: float,  # [!] 新增：基础 alpha
             scorer: Scorer,
             intervention_func: Callable,
             device: str = 'cpu'
@@ -190,6 +221,9 @@ class Guard:
         self.kappa = kappa
         self.h = h
 
+        # [!] 干预参数
+        self.base_alpha = base_alpha
+
         # 核心组件
         self.scorer = scorer
         self.intervention_func = intervention_func
@@ -204,7 +238,7 @@ class Guard:
         # --- 结束新增 ---
 
         logger.info(f"Guard 实例已初始化。将在第 {layer_id} 层运行。")
-        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}")
+        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}, base_alpha={base_alpha:.2f}")
 
     @classmethod
     def from_artifacts(cls, artifact_path: str, device: Optional[str] = None) -> "Guard":
@@ -255,17 +289,18 @@ class Guard:
         # 4. 准备 Intervention (阶段 6.1)
         transform_early = artifacts['transforms']['early_window'][layer_id]
         intervention_vector = artifacts['intervention_vectors'][layer_id]
-        # 假设 alpha (干预强度) 也是一个可配置参数，这里使用一个合理的默认值
-        # [!] 从 evaluation_config.yaml 或 defense_params.yaml 获取 alpha
-        alpha = params.get('alpha', 10.0) # 尝试从 defense_params 获取
-        if 'intervention_alpha' in params: # 备用键
-             alpha = params.get('intervention_alpha', 10.0)
 
-        logger.info(f"使用干预强度 (alpha): {alpha}")
+        # [!] 从 defense_params.yaml 加载 *基础* alpha
+        base_alpha = params.get('alpha', 10.0)  # 尝试键 'alpha'
+        if 'intervention_alpha' in params:  # 备用键
+            base_alpha = params.get('intervention_alpha', 10.0)
 
+        logger.info(f"使用基础干预强度 (base_alpha): {base_alpha}")
+
+        # [!] 创建干预函数时不再传入 alpha
         intervention_func = create_intervention_hook_func(
             vector=intervention_vector,
-            alpha=alpha,
+            # alpha=base_alpha, <-- [!] 移除
             transform=transform_early,  # 传入 early_window 变换
             device=device
         )
@@ -277,6 +312,7 @@ class Guard:
             mu_hat=mu_hat,
             kappa=kappa,
             h=h,
+            base_alpha=base_alpha,  # [!] 传入基础 alpha
             scorer=scorer,
             intervention_func=intervention_func,
             device=device

@@ -9,6 +9,10 @@
 
 本文件中的 `CusumState` 类是一个状态机，它维护着 CUSUM 统计量，并在每次
 收到新的风险分数时进行更新，最终判断是否触发警报。
+
+[!] 修改：
+- `update` 方法现在返回累积分数 A_t，而不是触发索引。
+- `update` 方法不再自动重置状态。重置逻辑已移至 SarcLogitsProcessor。
 """
 
 import torch
@@ -80,7 +84,9 @@ class CusumState:
 
     def update(self, r_t: torch.Tensor) -> torch.Tensor:
         """
-        使用新一批的风险分数 r_t 更新 CUSUM 状态，并返回触发警报的序列索引。
+        使用新一批的风险分数 r_t 更新 CUSUM 状态，并返回当前的累积分数 A_t。
+
+        [!] 修改：此方法不再触发重置，仅返回 A_t。
 
         Args:
             r_t (torch.Tensor):
@@ -88,8 +94,7 @@ class CusumState:
 
         Returns:
             torch.Tensor:
-                一个布尔张量，形状为 (B,)。如果第 i 个元素为 True，
-                表示第 i 个序列在当前步骤触发了警报。
+                一个张量，形状为 (B,)，包含当前所有序列的 CUSUM 分数 A_t。
         """
         if r_t.device.type != self.device:
             r_t = r_t.to(self.device, non_blocking=True)
@@ -107,11 +112,10 @@ class CusumState:
         # 3. 计算当前的触发统计量 A_t
         A_t = self.S - self.M
 
-        # 4. 判定哪些序列超过了报警阈值 h
-        triggered_indices = A_t > self.h
+        # 4. [!] 移除重置逻辑
+        # triggered_indices = A_t > self.h
+        # if torch.any(triggered_indices):
+        #     self.reset(triggered_indices)
 
-        # 5. 对于已触发的序列，重置其状态以备下一轮检测
-        if torch.any(triggered_indices):
-            self.reset(triggered_indices)
-
-        return triggered_indices.cpu()
+        # 5. [!] 返回 A_t
+        return A_t.cpu()
