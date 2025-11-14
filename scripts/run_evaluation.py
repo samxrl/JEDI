@@ -13,26 +13,10 @@
     保存标签，然后释放分类器 LLM。
 3.  **阶段 3 (报告)**: 计算所有指标并保存到文件。
 
-主要功能:
-1.  加载基础 LLM 和 `Guard` 防御产物。
-2.  加载“可用性”数据集 (良性样本)。
-3.  加载“安全性”数据集 (例如 `jbb_expanded.csv`)，
-    并根据配置文件的 `attack_columns_to_eval` 列表，
-    将其从宽表转换为长表 (long format)，每个样本标记其来源的攻击方法。
-4.  运行评估：
-    a.  对“可用性”数据集，运行 Baseline vs Guarded。
-    b.  对“安全性”数据集，按“攻击方法”分组，
-        对*每种*攻击方法分别运行 Baseline vs Guarded。
-5.  **(新)** 释放基础 LLM 和 Guard。
-6.  **(新)** 加载分类器 LLM。
-7.  使用分类器判断所有输出的有害性。
-8.  **(新)** 释放分类器 LLM。
-9.  **(新)** 根据完整的、带标签的数据帧计算汇总指标。
-10. 将所有详细结果 (包括攻击方法、触发步骤等) 保存到 CSV。
-11. 将汇总指标 (FPR 和按攻击方法分的 ASR) 保存到 JSON。
-
-如何运行:
-python scripts/run_evaluation.py --config configs/evaluation_config.yaml
+** [!] 此版本已修改，支持加载和评估多个良性数据集。 **
+1.  `load_utility_dataset` 现在从配置中加载一个数据集列表。
+2.  实现了基于配额的等额采样逻辑。
+3.  评估和保存阶段现在会为每个良性数据集分别生成报告。
 """
 
 import argparse
@@ -116,46 +100,125 @@ def load_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str) -
     return model, tokenizer
 
 
-def load_utility_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> pd.DataFrame:
+def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 0) -> pd.DataFrame:
     """
-    从 CSV 文件加载“可用性”(良性)评估数据集。
+    [!! 已修改 !!]
+    从 CSV 文件加载一个或多个“可用性”(良性)评估数据集。
+    支持基于配额的等额采样。
     """
-    file_path = data_dir / config['filename']
-    prompt_col = config['prompt_column']
-
-    if not file_path.exists():
-        logger.warning(f"可用性数据集文件未找到: {file_path}。返回空数据帧。")
+    logger.info("正在加载可用性 (Utility) 数据集...")
+    dataset_list = config.get('datasets')
+    if not dataset_list or not isinstance(dataset_list, list):
+        logger.warning("在配置中未找到 'utility_dataset_config.datasets' 列表。返回空数据帧。")
         return pd.DataFrame()
 
-    df = pd.read_csv(file_path)
+    all_loaded_dfs = []
+    for dataset_config in dataset_list:
+        name = dataset_config.get('name')
+        filename = dataset_config.get('filename')
+        prompt_col = dataset_config.get('prompt_column')
 
-    if prompt_col not in df.columns:
-        logger.error(f"可用性数据集 {file_path} 缺少指定的提示列 '{prompt_col}'。")
+        if not name or not filename or not prompt_col:
+            logger.warning(f"跳过一个无效的良性数据集条目 (缺少 name, filename, 或 prompt_column): {dataset_config}")
+            continue
+
+        file_path = data_dir / filename
+        if not file_path.exists():
+            logger.warning(f"可用性数据集文件未找到: {file_path}。跳过。")
+            continue
+
+        try:
+            df = pd.read_csv(file_path)
+            if prompt_col not in df.columns:
+                logger.error(f"可用性数据集 {file_path} 缺少列 '{prompt_col}'。跳过。")
+                continue
+
+            df.rename(columns={prompt_col: 'prompt'}, inplace=True)
+            # [!] 关键：添加数据集名称
+            df['utility_dataset_name'] = name
+
+            # 为良性数据集填充占位符
+            if 'behavior' not in df.columns:
+                if 'Goal' in df.columns:
+                    df['behavior'] = df['Goal']
+                elif 'Behavior' in df.columns:
+                    df['behavior'] = df['Behavior']
+                else:
+                    df['behavior'] = "N/A"
+            if 'FunctionalCategory' not in df.columns:
+                df['FunctionalCategory'] = "N/A"
+            if 'ContextString' not in df.columns:
+                df['ContextString'] = ""
+            df['attack_method'] = 'N/A'  # 占位
+
+            all_loaded_dfs.append(df)
+            logger.info(f"已从 {file_path} 加载 {len(df)} 个样本 (标记为 '{name}')。")
+
+        except Exception as e:
+            logger.error(f"处理文件 {file_path} 时出错: {e}", exc_info=True)
+
+    if not all_loaded_dfs:
+        logger.warning("未成功加载任何可用性数据集。")
         return pd.DataFrame()
 
-    # 重命名提示列为 'prompt' 以便统一处理
-    df.rename(columns={prompt_col: 'prompt'}, inplace=True)
+    # --- 采样逻辑 ---
+    if total_sample_size <= 0:
+        logger.info(f"sample_size <= 0, 正在合并所有 {len(all_loaded_dfs)} 个数据集 (总计 {sum(len(df) for df in all_loaded_dfs)} 个样本)。")
+        return pd.concat(all_loaded_dfs, ignore_index=True)
 
-    # 为良性数据集填充占位符
-    if 'behavior' not in df.columns:
-        # 如果 'prompt' 列就是 'Goal' 或 'Behavior'，则复制
-        if 'Goal' in df.columns:
-            df['behavior'] = df['Goal']
-        elif 'Behavior' in df.columns:
-            df['behavior'] = df['Behavior']
-        else:
-            df['behavior'] = "N/A"  # 否则设为 N/A
+    logger.info(f"正在从 {len(all_loaded_dfs)} 个数据集中进行等额采样，目标总共 {total_sample_size} 个样本...")
 
-    if 'FunctionalCategory' not in df.columns:
-        df['FunctionalCategory'] = "N/A"
-    if 'ContextString' not in df.columns:
-        df['ContextString'] = ""
+    num_datasets = len(all_loaded_dfs)
+    base_quota = total_sample_size // num_datasets
+    remainder = total_sample_size % num_datasets
+    # 基础配额，并将余数分配给前几个数据集
+    quotas = [base_quota + 1 if i < remainder else base_quota for i in range(num_datasets)]
 
-    if sample_size > 0 and sample_size < len(df):
-        df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
+    sampled_dfs = []
+    total_shortfall = 0
+    donors = []  # (index, extra_capacity)
 
-    logger.info(f"从 {file_path} 加载了 {len(df)} 个可用性样本。")
-    return df
+    # 第一遍：尝试满足配额
+    logger.debug(f"初始配额: {quotas}")
+    for i, df in enumerate(all_loaded_dfs):
+        quota = quotas[i]
+        if len(df) >= quota:
+            sampled_dfs.append(df.sample(n=quota, random_state=42))
+            extra = len(df) - quota
+            if extra > 0:
+                donors.append((i, extra))
+        else:  # 样本数不足
+            sampled_dfs.append(df)  # 全部采样
+            total_shortfall += (quota - len(df))
+            logger.info(f"数据集 {i} 样本不足 (需要 {quota}, 只有 {len(df)})。缺口: {quota - len(df)}")
+
+    # 第二遍：重新分配缺口
+    if total_shortfall > 0 and donors:
+        logger.info(f"出现 {total_shortfall} 个样本的缺口，正在从其他数据集中补充...")
+
+        # 汇总所有可用的额外样本
+        all_extra_samples = []
+        for donor_idx, extra_cap in donors:
+            donor_df = all_loaded_dfs[donor_idx]
+            # 找到未被采样的索引
+            sampled_indices = sampled_dfs[donor_idx].index
+            available_indices = donor_df.index.difference(sampled_indices)
+            # 添加可用的额外行
+            all_extra_samples.append(donor_df.loc[available_indices])
+
+        if all_extra_samples:
+            # 合并所有可用的额外样本
+            extra_df = pd.concat(all_extra_samples, ignore_index=True)
+            # 从这个池中随机采样以弥补缺口
+            take_n = min(total_shortfall, len(extra_df))
+            if take_n > 0:
+                final_extra_samples = extra_df.sample(n=take_n, random_state=42)
+                sampled_dfs.append(final_extra_samples)
+                logger.info(f"已成功补充 {take_n} 个额外样本。")
+
+    final_df = pd.concat(sampled_dfs, ignore_index=True).reset_index(drop=True)
+    logger.info(f"成功加载并采样了 {len(final_df)} 个可用性样本。")
+    return final_df
 
 
 def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> pd.DataFrame:
@@ -207,6 +270,9 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
         df_long['FunctionalCategory'] = "N/A"
     if 'ContextString' not in df_long.columns:
         df_long['ContextString'] = ""
+
+    # [!] 添加占位符，以便与良性数据集合并
+    df_long['utility_dataset_name'] = 'N/A'
 
     if sample_size > 0 and sample_size < len(df_long):
         # 注意：采样可能导致某些攻击方法的样本变少
@@ -385,7 +451,7 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="运行 SARC 防御评估 (支持 jbb_expanded.csv)。")
+    parser = argparse.ArgumentParser(description="运行 SARC 防御评估 (支持 jbb_expanded.csv 和多个良性数据集)。")
     parser.add_argument('--config', type=str, default='configs/evaluation_config.yaml',
                         help='评估配置文件路径。')
     args = parser.parse_args()
@@ -447,51 +513,60 @@ def main():
         gen_config.eos_token_id = tokenizer.eos_token_id
 
         # --- 7. 加载数据集 ---
+        # [!] 修改：加载一个或多个良性数据集
         utility_config = config['utility_dataset_config']
-        utility_sample_size = utility_config.get('sample_size', 0)
-        df_utility = load_utility_dataset(utility_config, data_dir, utility_sample_size)
+        utility_sample_size = utility_config.get('sample_size', 0)  # 这是总采样大小
+        df_utility_all = load_utility_dataset(utility_config, data_dir, utility_sample_size)
 
         safety_config = config['safety_dataset_config']
         safety_sample_size = safety_config.get('sample_size', 0)
         df_safety_long = load_safety_dataset(safety_config, data_dir, safety_sample_size)
 
         # --- 8a. 评估可用性 (FPR) ---
-        if not df_utility.empty:
-            logger.info("--- 评估开始: 可用性 (FPR) ---")
-            prompts = df_utility['prompt'].tolist()
+        # [!] 修改：按良性数据集名称循环
+        if not df_utility_all.empty:
+            utility_dataset_names = df_utility_all['utility_dataset_name'].unique()
+            logger.info(f"--- 评估开始: 可用性 (FPR)，将测试 {len(utility_dataset_names)} 个良性数据集 ---")
 
-            # Baseline
-            baseline_outputs, baseline_triggers = run_generation(
-                model, tokenizer, prompts, gen_config, batch_size, guard=None
-            )
-            df_baseline = df_utility.copy()
-            df_baseline['assistant_output'] = baseline_outputs
-            df_baseline['trigger_step'] = baseline_triggers
-            df_baseline['condition'] = 'baseline'
-            df_baseline['dataset'] = 'utility'
-            df_baseline['attack_method'] = 'N/A'  # 占位
-            all_results_dfs.append(df_baseline)
+            for dataset_name in utility_dataset_names:
+                logger.info(f"--- 正在评估良性数据集: {dataset_name} ---")
+                df_utility_subset = df_utility_all[df_utility_all['utility_dataset_name'] == dataset_name].reset_index(drop=True)
+                prompts = df_utility_subset['prompt'].tolist()
 
-            del baseline_outputs, baseline_triggers, df_baseline
-            gc.collect()
-            if device == "cuda": torch.cuda.empty_cache()
+                if not prompts:
+                    logger.warning(f"良性数据集 {dataset_name} 没有可运行的提示，跳过。")
+                    continue
 
-            # Guarded ( [!] FIX: This block was missing)
-            guarded_outputs, guarded_triggers = run_generation(
-                model, tokenizer, prompts, gen_config, batch_size, guard=guard
-            )
-            df_guarded = df_utility.copy()
-            df_guarded['assistant_output'] = guarded_outputs
-            df_guarded['trigger_step'] = guarded_triggers
-            df_guarded['condition'] = 'guarded'
-            df_guarded['dataset'] = 'utility'
-            df_guarded['attack_method'] = 'N/A'  # 占位
-            all_results_dfs.append(df_guarded)
+                # Baseline
+                baseline_outputs, baseline_triggers = run_generation(
+                    model, tokenizer, prompts, gen_config, batch_size, guard=None
+                )
+                df_baseline = df_utility_subset.copy()
+                df_baseline['assistant_output'] = baseline_outputs
+                df_baseline['trigger_step'] = baseline_triggers
+                df_baseline['condition'] = 'baseline'
+                df_baseline['dataset'] = 'utility'
+                # 'attack_method' 和 'utility_dataset_name' 已在加载时设置
+                all_results_dfs.append(df_baseline)
 
-            del guarded_outputs, guarded_triggers, df_guarded
-            gc.collect()
-            if device == "cuda": torch.cuda.empty_cache()
+                del baseline_outputs, baseline_triggers, df_baseline
+                gc.collect()
+                if device == "cuda": torch.cuda.empty_cache()
 
+                # Guarded
+                guarded_outputs, guarded_triggers = run_generation(
+                    model, tokenizer, prompts, gen_config, batch_size, guard=guard
+                )
+                df_guarded = df_utility_subset.copy()
+                df_guarded['assistant_output'] = guarded_outputs
+                df_guarded['trigger_step'] = guarded_triggers
+                df_guarded['condition'] = 'guarded'
+                df_guarded['dataset'] = 'utility'
+                all_results_dfs.append(df_guarded)
+
+                del guarded_outputs, guarded_triggers, df_guarded
+                gc.collect()
+                if device == "cuda": torch.cuda.empty_cache()
         else:
             logger.warning("跳过可用性评估，因为数据集为空。")
 
@@ -543,7 +618,6 @@ def main():
 
     finally:
         # --- 关键步骤: 释放被测 LLM ---
-        # [!] MODIFICATION: Inlined release_model_memory logic
         if 'model' in locals():
             model_name = model.config.name_or_path if hasattr(model, 'config') and hasattr(model.config, 'name_or_path') else "被测 LLM"
             logger.info(f"正在从内存中释放模型: {model_name}...")
@@ -552,12 +626,10 @@ def main():
                 del tokenizer
             if 'guard' in locals():
                 del guard
-
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("模型内存已释放。")
-        # [!] End of modification
 
     logger.info("--- 阶段 1: 文本生成全部完成 ---")
 
@@ -573,40 +645,34 @@ def main():
     final_results_df = pd.concat(all_results_dfs, ignore_index=True)
     del all_results_dfs  # 释放列表内存
 
-    # [!] MODIFICATION: 统一定义 *临时的* CSV 文件路径
     interim_csv_path = output_dir / f"{llm_name}_evaluation_INTERIM_all_results.csv"
 
     # --- 在保存中间文件和最终文件之前，格式化 trigger_step ---
-    # 确保 'trigger_step' 列是整数类型 (可空)
     if 'trigger_step' in final_results_df.columns:
         final_results_df['trigger_step'] = final_results_df['trigger_step'].apply(lambda x: pd.NA if x == -1 else x).astype('Int64')
 
-    # --- [!] MODIFICATION: 整理列并保存 *第一次* (无 label) 到 *临时* 路径 ---
+    # --- 整理列并保存 *第一次* (无 label) 到 *临时* 路径 ---
     try:
         logger.info(f"正在保存中间生成结果 (无标签) 到: {interim_csv_path}")
 
-        # 整理列顺序
         base_cols_config = config.get('safety_dataset_config', {}).get('base_columns', [])
         ordered_cols = base_cols_config + [
-            'attack_method', 'dataset', 'condition', 'prompt', 'assistant_output', 'trigger_step'
+            'attack_method', 'utility_dataset_name', 'dataset', 'condition', 'prompt', 'assistant_output', 'trigger_step'
         ]
         current_cols = final_results_df.columns
         final_ordered_cols = [c for c in ordered_cols if c in current_cols]
         extra_cols = [c for c in current_cols if c not in final_ordered_cols]
         final_ordered_cols.extend(extra_cols)
 
-        # 确保 'label' 列存在 (虽然此时为空)，以便后续填充
         if 'label' not in final_ordered_cols:
             final_ordered_cols.append('label')
-            final_results_df['label'] = pd.NA  # 明确创建列
+            final_results_df['label'] = pd.NA
 
-        final_results_df = final_results_df[final_ordered_cols]  # 重新排序 DataFrame
-
+        final_results_df = final_results_df[final_ordered_cols]
         final_results_df.to_csv(interim_csv_path, index=False, encoding='utf-8-sig')
         logger.info("中间生成结果CSV 保存成功。")
     except Exception as e:
         logger.warning(f"保存 CSV 文件失败: {e}", exc_info=True)
-    # --- 修改结束 ---
 
     try:
         # --- 5. 加载分类器 LLM ---
@@ -627,7 +693,6 @@ def main():
 
     finally:
         # --- 关键步骤: 释放分类器 LLM ---
-        # [!] MODIFICATION: Inlined release_model_memory logic
         if 'classifier_model' in locals():
             model_name = classifier_model.config.name_or_path if hasattr(classifier_model, 'config') and hasattr(classifier_model.config,
                                                                                                                  'name_or_path') else "分类器 LLM"
@@ -635,44 +700,52 @@ def main():
             del classifier_model
             if 'classifier_tokenizer' in locals():
                 del classifier_tokenizer
-
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("模型内存已释放。")
-        # [!] End of modification
+
     logger.info("--- 阶段 3: 计算指标并保存拆分报告 ---")
 
-    # [!] MODIFICATION: 不再使用单一 summary_metrics, 而是分别保存
-
-    # --- 计算并保存可用性指标 (FPR) ---
+    # --- [!] 修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
     df_utility_results = final_results_df[final_results_df['dataset'] == 'utility']
     if not df_utility_results.empty:
-        baseline_fpr_metrics = calculate_metrics(df_utility_results.query("condition == 'baseline'"), condition='baseline')
-        guarded_fpr_metrics = calculate_metrics(df_utility_results.query("condition == 'guarded'"), condition='guarded')
+        # 从结果中获取所有唯一的良性数据集名称
+        utility_dataset_names = df_utility_results['utility_dataset_name'].unique()
+        logger.info(f"正在为 {len(utility_dataset_names)} 个良性数据集计算 FPR 指标...")
 
-        # [!] 新增: 创建独立的 utility summary
-        utility_summary = {
-            'utility_fpr': {
-                'baseline': baseline_fpr_metrics,
-                'guarded': guarded_fpr_metrics
+        for dataset_name in utility_dataset_names:
+            if pd.isna(dataset_name) or dataset_name == 'N/A': continue
+
+            # 筛选出当前循环的良性数据集
+            df_utility_subset = df_utility_results[df_utility_results['utility_dataset_name'] == dataset_name]
+            if df_utility_subset.empty: continue
+
+            # 分别计算 baseline 和 guarded 的指标
+            baseline_fpr_metrics = calculate_metrics(df_utility_subset.query("condition == 'baseline'"), condition='baseline')
+            guarded_fpr_metrics = calculate_metrics(df_utility_subset.query("condition == 'guarded'"), condition='guarded')
+
+            # [!] 为这个特定的数据集创建独立的 summary
+            utility_summary = {
+                f'utility_fpr_{dataset_name}': {
+                    'baseline': baseline_fpr_metrics,
+                    'guarded': guarded_fpr_metrics
+                }
             }
-        }
-        logger.info(f"可用性 (FPR) - Baseline: {baseline_fpr_metrics['rate']:.4f}, Guarded: {guarded_fpr_metrics['rate']:.4f}")
+            logger.info(f"可用性 (FPR) for {dataset_name} - Baseline: {baseline_fpr_metrics['rate']:.4f}, Guarded: {guarded_fpr_metrics['rate']:.4f}")
 
-        # [!] 新增: 保存独立的 utility 文件
-        try:
-            utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility.csv"
-            df_utility_results.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
+            # [!] 为这个特定的数据集保存独立的文件
+            try:
+                utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
+                df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
 
-            utility_json_path = output_dir / f"{llm_name}_evaluation_summary_utility.json"
-            with open(utility_json_path, 'w', encoding='utf-8') as f:
-                json.dump(utility_summary, f, indent=2, default=str)
+                utility_json_path = output_dir / f"{llm_name}_evaluation_summary_utility_{dataset_name}.json"
+                with open(utility_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(utility_summary, f, indent=2, default=str)
 
-            logger.info(f"已保存可用性 (Utility) 结果到: {utility_csv_path.name} 和 {utility_json_path.name}")
-        except Exception as e:
-            logger.error(f"保存可用性 (Utility) 结果文件时失败: {e}", exc_info=True)
-
+                logger.info(f"已保存可用性 (Utility) '{dataset_name}' 结果到: {utility_csv_path.name} 和 {utility_json_path.name}")
+            except Exception as e:
+                logger.error(f"保存可用性 (Utility) '{dataset_name}' 结果文件时失败: {e}", exc_info=True)
     else:
         logger.info("未找到可用性结果，跳过 FPR 计算和保存。")
 
@@ -680,6 +753,7 @@ def main():
     df_safety_results = final_results_df[final_results_df['dataset'] == 'safety']
     if not df_safety_results.empty:
         attack_methods = df_safety_results['attack_method'].unique()
+        logger.info(f"正在为 {len(attack_methods)} 种攻击方法计算 ASR 指标...")
 
         for method in attack_methods:
             if pd.isna(method) or method == 'N/A': continue
@@ -690,7 +764,6 @@ def main():
             baseline_asr_metrics = calculate_metrics(df_attack.query("condition == 'baseline'"), condition='baseline')
             guarded_asr_metrics = calculate_metrics(df_attack.query("condition == 'guarded'"), condition='guarded')
 
-            # [!] 新增: 创建独立的 attack summary
             attack_summary = {
                 f'safety_asr_attack_{method}': {
                     'baseline': baseline_asr_metrics,
@@ -699,7 +772,6 @@ def main():
             }
             logger.info(f"安全性 (ASR) for {method} - Baseline: {baseline_asr_metrics['rate']:.4f}, Guarded: {guarded_asr_metrics['rate']:.4f}")
 
-            # [!] 新增: 保存独立的 attack 文件
             try:
                 attack_csv_path = output_dir / f"{llm_name}_evaluation_detailed_attack_{method}.csv"
                 df_attack.to_csv(attack_csv_path, index=False, encoding='utf-8-sig')
@@ -714,10 +786,6 @@ def main():
     else:
         logger.info("未找到安全性结果，跳过 ASR 计算和保存。")
 
-    # --- [!] MODIFICATION: 移除末尾的统一保存逻辑 ---
-
-    # (原 ...final_results_df.to_csv(csv_path)... 和 json.dump(summary_metrics...) 逻辑已删除)
-
     logger.info("评估流程全部完成。")
 
     # --- [!] 新增: 自动删除临时文件 ---
@@ -727,7 +795,6 @@ def main():
             logger.info(f"已清理临时文件: {interim_csv_path.name}")
     except Exception as e:
         logger.warning(f"清理临时文件 {interim_csv_path.name} 时失败: {e}", exc_info=True)
-    # --- 自动删除结束 ---
 
 
 if __name__ == "__main__":

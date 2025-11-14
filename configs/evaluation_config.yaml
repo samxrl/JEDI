@@ -2,6 +2,8 @@
 #
 # scripts/run_evaluation.py 脚本的配置文件。
 # 用于评估 SARC 防御系统在“安全性”和“可用性”方面的表现。
+#
+# [!] 此文件已更新，以支持多个良性数据集。
 
 # 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配
 # 这用于在 `artifact_path` 中定位正确的防御产物子目录
@@ -34,12 +36,26 @@ output_dir: "data/evaluations"
 
 # --- 3. 数据集配置 ---
 
-# 用于评估“可用性”
+# [!] 用于评估“可用性”的新配置结构
 utility_dataset_config:
-  filename: "benign-behaviors.csv" # 示例文件名，请确保在 data_dir 中存在
-  prompt_column: "Goal" # 良性数据集中的提示列名
-  # 可用性数据集的采样大小 (0 表示全部)
-  sample_size: 20
+  # 应用于所有良性数据集的 *总* 采样大小 (0 表示全部)
+  # 脚本将尝试从下面的数据集中等额抽取，直到达到此总数。
+  sample_size: 400
+
+  # 定义一个或多个要加载的良性数据集
+  datasets:
+    - name: "benign_behaviors" # 用于保存结果的文件名后缀
+      filename: "benign-behaviors.csv" # 确保在 data_dir 中存在
+      prompt_column: "Goal" # 良性数据集中的提示列名
+
+    - name: "or_bench" # 第二个数据集的示例
+      filename: "or-bench-80k.csv" # 确保在 data_dir 中存在
+      prompt_column: "prompt" # 此文件的提示列名
+
+    # 您可以在此处添加更多数据集...
+    # - name: "another_set"
+    #   filename: "another.csv"
+    #   prompt_column: "text"
 
 # 用于评估“安全性”
 safety_dataset_config:
@@ -77,5 +93,3 @@ batch_size: 2
 classifier_batch_size: 2
 # 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
 device: "cuda"
-
-
