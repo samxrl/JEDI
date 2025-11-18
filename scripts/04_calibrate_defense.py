@@ -25,6 +25,7 @@
 5.  **保存防御参数**:
     - 将所有校准得到的参数 (最优层、theta、kappa、h、以及对应的向量和变换) 保存到一个文件中，
       以供在线防御系统使用。
+    - [!] 新增: 将网格搜索的详细结果保存为 CSV 表格。
 
 如何运行:
 python scripts/04_calibrate_defense.py --config configs/calibration_config.yaml
@@ -185,11 +186,23 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
 
     # 找到满足 FPR 约束的最佳参数
     valid_params = results_df[results_df['fpr'] <= grid_config['target_fpr']]
+
     if valid_params.empty:
         logging.warning(f"没有参数组合满足 FPR <= {grid_config['target_fpr']} 的约束。将选择 FPR 最低的组合。")
         best_params = results_df.sort_values(by=['fpr', 'delay']).iloc[0]
     else:
-        best_params = valid_params.sort_values(by='delay').iloc[0]
+        # [!] 修改：使用加权多目标优化选择最佳参数
+        # Score = TPR + alpha * (1 / (Delay + 1))
+        # alpha 由配置文件中的 delay_weight 指定，默认为 0.1
+        alpha = grid_config.get('delay_weight', 0.1)
+
+        valid_params = valid_params.copy()  # 避免 SettingWithCopyWarning
+        valid_params['score'] = valid_params['tpr'] + alpha * (1.0 / (valid_params['delay'] + 1.0))
+
+        best_params = valid_params.sort_values(by='score', ascending=False).iloc[0]
+
+        logging.info(f"使用加权评分选择最佳参数 (alpha={alpha}, Score = TPR + alpha/(Delay+1))。")
+        logging.info(f"在 {len(valid_params)} 个满足 FPR 约束的组合中，选出了得分最高的一组 (Score={best_params['score']:.4f})。")
 
     logging.info("CUSUM 网格搜索结果摘要:\n" + results_df.to_string(max_rows=20))
     logging.info(
@@ -198,7 +211,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
         f"-> (FPR={best_params['fpr']:.4f}, TPR={best_params['tpr']:.4f}, Delay={best_params['delay']:.2f}) ***"
     )
 
-    return best_params.to_dict(), results_df , benign_r_mean
+    return best_params.to_dict(), results_df, benign_r_mean
 
 
 def main():
@@ -249,7 +262,7 @@ def main():
     theta = np.quantile(benign_scores_best_layer, config['calibration_params']['theta_quantile'])
 
     # 校准 CUSUM
-    best_cusum_params, _, benign_r_mean= calibrate_cusum(
+    best_cusum_params, grid_search_results_df, benign_r_mean = calibrate_cusum(
         harmful_sequences_by_layer[best_layer_idx],
         benign_sequences_by_layer[best_layer_idx],
         theta,
@@ -268,19 +281,23 @@ def main():
         'llm_name': llm_name,
         'best_layer': best_layer_idx,
         'theta': float(theta),
-        'mu_hat':float(benign_r_mean),
+        'mu_hat': float(benign_r_mean),
         'kappa': best_cusum_params['kappa'],
         'h': best_cusum_params['h'],
     }
 
-    # --- 8. 将防御参数保存为 YAML 文件 ---
+    # --- 8. 保存结果 ---
+
+    # 8a. 保存 defense_params.yaml
     save_path = output_dir / "defense_params.yaml"
-
-
     with open(save_path, 'w', encoding='utf-8') as f:
         yaml.dump(defense_params, f, indent=2, allow_unicode=True, sort_keys=False)
-
     logging.info(f"防御参数已成功校准并保存到: {save_path}")
+
+    # 8b. [!] 保存网格搜索结果到 CSV
+    grid_results_path = output_dir / "cusum_grid_search_results.csv"
+    grid_search_results_df.to_csv(grid_results_path, index=False, encoding='utf-8-sig')
+    logging.info(f"CUSUM 网格搜索详细结果已保存到: {grid_results_path}")
 
     # (可选) 绘制最优层分数分布图
     plt.figure(figsize=(10, 6))
@@ -298,5 +315,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

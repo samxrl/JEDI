@@ -9,6 +9,12 @@
 # 这用于在 `artifact_path` 中定位正确的防御产物子目录
 llm_name: "vicuna_7b_v1_5"
 
+# --- [新增] 评测流程控制 ---
+# 控制是否运行“可用性”(良性)数据集的评测 (FPR)
+run_utility_evaluation: true
+# 控制是否运行“安全性”(有害)数据集的评测 (ASR)
+run_safety_evaluation: true
+
 # --- 1. 模型路径 ---
 # 要被评估（和保护）的基础 LLM
 llm_config:
@@ -40,7 +46,7 @@ output_dir: "data/evaluations"
 utility_dataset_config:
   # 应用于所有良性数据集的 *总* 采样大小 (0 表示全部)
   # 脚本将尝试从下面的数据集中等额抽取，直到达到此总数。
-  sample_size: 400
+  sample_size: 100
 
   # 定义一个或多个要加载的良性数据集
   datasets:
@@ -84,11 +90,11 @@ safety_dataset_config:
 # --- 4. 评测参数 ---
 # 在评测时要生成的 token 数量
 generation_kwargs:
-  max_new_tokens: 128
+  max_new_tokens: 256
   do_sample: false
 
 # 评测时使用的批量大小。根据显存（VRAM）进行调整。
-batch_size: 2
+batch_size: 8
 # 分类器模型的批量大小 (通常需要更小)
 classifier_batch_size: 2
 # 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)

@@ -112,18 +112,23 @@ def get_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str):
     return model, tokenizer, config
 
 
-def aggregate_activations(activations: torch.Tensor, method: str) -> torch.Tensor:
+def aggregate_activations(activations: torch.Tensor, method: str, max_tokens: int = 0) -> torch.Tensor:
     """
     在序列长度维度上聚合隐藏状态。
 
     Args:
         activations (torch.Tensor): 形状为 (batch_size, seq_len, hidden_dim) 的张量。
         method (str): 聚合方法，'mean' (平均) 或 'last' (取最后一个)。
+        max_tokens (int, optional): 如果 method 为 'mean'，则仅使用前 max_tokens 个 token 计算平均值。
+                                    默认为 0，表示使用所有 token。
 
     Returns:
         torch.Tensor: 聚合后的形状为 (batch_size, hidden_dim) 的张量。
     """
     if method == "mean":
+        # 如果指定了 max_tokens 且当前序列长度超过该值，则截断
+        if max_tokens > 0 and activations.shape[1] > max_tokens:
+            activations = activations[:, :max_tokens, :]
         return activations.mean(dim=1)
     elif method == "last":
         return activations[:, -1, :]
@@ -202,6 +207,9 @@ def process_batch(
     }
     # --- MODIFICATION END ---
 
+    # 从配置中获取 mean_k 参数 (如果存在)，默认为 0 (不截断)
+    mean_k = extraction_config.get('mean_k', 0)
+
     # --- 提取激活 ---
     for layer_idx in extraction_config['layers']:
         layer_hidden_states = all_hidden_states[layer_idx]
@@ -209,7 +217,12 @@ def process_batch(
         # --- MODIFICATION START: 仅提取并存储 'content_window' 的聚合激活 ---
         content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
         if content_window_states.shape[1] > 0:
-            agg_content_batch = aggregate_activations(content_window_states, extraction_config['aggregation'])
+            # [!] 关键修改: 仅对 content_window 应用 mean_k 截断
+            agg_content_batch = aggregate_activations(
+                content_window_states,
+                extraction_config['aggregation'],
+                max_tokens=mean_k
+            )
             batch_activations[layer_idx]['content_window'].append(agg_content_batch.cpu())
             del agg_content_batch
         del content_window_states
@@ -229,7 +242,12 @@ def process_batch(
                 early_window_slice = layer_hidden_states[i, prefix_start_idx:prefix_end_idx, :].unsqueeze(0)
 
                 # --- MODIFICATION START: 仅提取并存储 'early_window' 的聚合激活 ---
-                agg_early = aggregate_activations(early_window_slice, extraction_config['aggregation'])
+                # 对于 early_window (前缀)，我们通常不使用 k 截断，保留 max_tokens=0
+                agg_early = aggregate_activations(
+                    early_window_slice,
+                    extraction_config['aggregation'],
+                    max_tokens=0
+                )
                 batch_activations[layer_idx]['early_window'].append(agg_early.cpu())
                 del early_window_slice, agg_early
                 # --- MODIFICATION END ---
@@ -374,7 +392,7 @@ def main():
 
                 # --- 5. 检查是否需要保存块 ---
                 is_last_batch_of_dataset = processed_rows == len(df)
-                if (batches_in_chunk >= 50 or is_last_batch_of_dataset) and chunk_outputs_for_csv:
+                if (batches_in_chunk >= 25 or is_last_batch_of_dataset) and chunk_outputs_for_csv:
                     logging.info(f"已处理 {batches_in_chunk} 个批次, 正在保存块 {chunk_index}...")
 
                     # 格式化并保存激活块
@@ -444,4 +462,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

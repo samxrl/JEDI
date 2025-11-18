@@ -17,6 +17,10 @@
 1.  `load_utility_dataset` 现在从配置中加载一个数据集列表。
 2.  实现了基于配额的等额采样逻辑。
 3.  评估和保存阶段现在会为每个良性数据集分别生成报告。
+
+** [!] 此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
+1.  新增 `run_utility_evaluation` 和 `run_safety_evaluation` 配置项。
+2.  根据配置项条件性地加载数据集和执行评测。
 """
 
 import argparse
@@ -465,6 +469,15 @@ def main():
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
+    # --- [新增] 加载流程控制标志 ---
+    run_utility = config.get('run_utility_evaluation', True)
+    run_safety = config.get('run_safety_evaluation', True)
+    logger.info(f"评测流程配置: run_utility_evaluation={run_utility}, run_safety_evaluation={run_safety}")
+
+    if not run_utility and not run_safety:
+        logger.info("run_utility_evaluation 和 run_safety_evaluation 均为 false，没有评测任务要执行。正在退出。")
+        return
+
     # --- 2. 设置路径 ---
     llm_name = config['llm_name']
     output_dir = base_dir / config['output_dir'] / llm_name
@@ -513,17 +526,30 @@ def main():
         gen_config.eos_token_id = tokenizer.eos_token_id
 
         # --- 7. 加载数据集 ---
-        # [!] 修改：加载一个或多个良性数据集
-        utility_config = config['utility_dataset_config']
-        utility_sample_size = utility_config.get('sample_size', 0)  # 这是总采样大小
-        df_utility_all = load_utility_dataset(utility_config, data_dir, utility_sample_size)
+        # [!] 修改：根据 run_utility 标志条件性加载
+        df_utility_all = pd.DataFrame() # [!] 初始化为空
+        if run_utility:
+            logger.info("正在加载“可用性”数据集...")
+            utility_config = config['utility_dataset_config']
+            utility_sample_size = utility_config.get('sample_size', 0)  # 这是总采样大小
+            df_utility_all = load_utility_dataset(utility_config, data_dir, utility_sample_size)
+        else:
+            logger.info("根据配置，跳过加载“可用性”数据集。")
 
-        safety_config = config['safety_dataset_config']
-        safety_sample_size = safety_config.get('sample_size', 0)
-        df_safety_long = load_safety_dataset(safety_config, data_dir, safety_sample_size)
+        # [!] 修改：根据 run_safety 标志条件性加载
+        df_safety_long = pd.DataFrame() # [!] 初始化为空
+        if run_safety:
+            logger.info("正在加载“安全性”数据集...")
+            safety_config = config['safety_dataset_config']
+            safety_sample_size = safety_config.get('sample_size', 0)
+            df_safety_long = load_safety_dataset(safety_config, data_dir, safety_sample_size)
+        else:
+            logger.info("根据配置，跳过加载“安全性”数据集。")
 
         # --- 8a. 评估可用性 (FPR) ---
         # [!] 修改：按良性数据集名称循环
+        # [!] 现有的 'if not df_utility_all.empty:' 检查已足够，
+        # 因为如果 run_utility=False, df_utility_all 将保持为空。
         if not df_utility_all.empty:
             utility_dataset_names = df_utility_all['utility_dataset_name'].unique()
             logger.info(f"--- 评估开始: 可用性 (FPR)，将测试 {len(utility_dataset_names)} 个良性数据集 ---")
@@ -568,9 +594,11 @@ def main():
                 gc.collect()
                 if device == "cuda": torch.cuda.empty_cache()
         else:
-            logger.warning("跳过可用性评估，因为数据集为空。")
+            logger.warning("跳过可用性评估，因为数据集为空或配置为跳过。")
 
         # --- 8b. 评估安全性 (ASR)，按攻击方法分组 ---
+        # [!] 现有的 'if not df_safety_long.empty:' 检查已足够，
+        # 因为如果 run_safety=False, df_safety_long 将保持为空。
         if not df_safety_long.empty:
             attack_methods = df_safety_long['attack_method'].unique()
             logger.info(f"--- 评估开始: 安全性 (ASR)，将测试 {len(attack_methods)} 种攻击方法 ---")
@@ -614,7 +642,7 @@ def main():
                 gc.collect()
                 if device == "cuda": torch.cuda.empty_cache()
         else:
-            logger.warning("跳过安全性评估，因为数据集为空。")
+            logger.warning("跳过安全性评估，因为数据集为空或配置为跳过。")
 
     finally:
         # --- 关键步骤: 释放被测 LLM ---
@@ -708,6 +736,8 @@ def main():
     logger.info("--- 阶段 3: 计算指标并保存拆分报告 ---")
 
     # --- [!] 修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
+    # [!] 现有的 'if run_utility:' 检查不是必需的，
+    # 因为如果 run_utility=False, 'utility' 数据集将不存在于 final_results_df 中
     df_utility_results = final_results_df[final_results_df['dataset'] == 'utility']
     if not df_utility_results.empty:
         # 从结果中获取所有唯一的良性数据集名称
@@ -750,6 +780,7 @@ def main():
         logger.info("未找到可用性结果，跳过 FPR 计算和保存。")
 
     # --- 计算并保存安全性指标 (ASR) ---
+    # [!] 现有的 'if run_safety:' 检查不是必需的
     df_safety_results = final_results_df[final_results_df['dataset'] == 'safety']
     if not df_safety_results.empty:
         attack_methods = df_safety_results['attack_method'].unique()

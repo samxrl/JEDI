@@ -19,11 +19,16 @@ calibration_params:
   # 用于计算边界阈值 theta 的分位数。
   # 直观上，这意味着在良性样本中，只有 (1 - quantile)% 的情况会产生非零的初始分数。
   # 推荐值: 0.90 到 0.98
-  theta_quantile: 0.98
+  theta_quantile: 0.95
 
   # 校准 CUSUM 参数时，我们旨在找到满足此误报率 (FPR) 约束的最佳组合。
   # 例如, 0.01 表示我们最多能容忍 1% 的良性样本被错误地标记为有害。
-  target_fpr: 0.01
+  target_fpr: 0.05
+
+  # [!] 新增：多目标优化中延迟项的权重 alpha。
+  # Score = TPR + alpha * (1 / (Delay + 1))
+  # 建议值较小 (如 0.05 - 0.1)，以确保 TPR 仍然是主要优化目标。
+  delay_weight: 0.1
 
   # --- CUSUM 参数扫描网格 ---
   # 定义了用于寻找最优 h (报警阈值) 和 k (容忍带) 的搜索空间。
