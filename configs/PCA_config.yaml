@@ -31,7 +31,7 @@ decoupling:
 generation:
   # 在计算分数时，模型需要生成内容以获取隐藏状态。
   # 此值应与 extraction_config.yaml 中的 max_new_tokens 保持一致。
-  max_new_tokens: 256
+  max_new_tokens: 64
 processing:
   # 分数计算阶段的批量大小。根据显存（VRAM）进行调整。
   batch_size: 5

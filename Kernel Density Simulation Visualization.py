@@ -124,7 +124,7 @@ Xg = rng2.multivariate_normal(
 ).T
 
 Xy = rng2.multivariate_normal(
-    mean=[2.6, -1.4],
+    mean=[2.4, -0.8],
     cov=[[0.32, -0.04],
          [-0.04, 0.16]],
     size=1500

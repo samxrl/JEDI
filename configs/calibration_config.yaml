@@ -37,8 +37,8 @@ calibration_params:
   # h (报警阈值) 的范围和步长
   h_min: 0
   h_max: 50
-  h_step: 2
+  h_step: 1
   # k (容忍带) 的范围和步长
   k_min: 0
   k_max: 50
-  k_step: 2
+  k_step: 1
