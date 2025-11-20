@@ -16,6 +16,10 @@ activations_dir: "data/activations"
 
 # --- 校准参数 ---
 calibration_params:
+  # [!] 新增: 控制并行处理的进程数量
+  # 默认为 4。如果设为 0 或更小，则使用所有可用的 CPU 核心。
+  num_processes: 12
+
   # 用于计算边界阈值 theta 的分位数。
   # 直观上，这意味着在良性样本中，只有 (1 - quantile)% 的情况会产生非零的初始分数。
   # 推荐值: 0.90 到 0.98
@@ -25,8 +29,8 @@ calibration_params:
   # 例如, 0.01 表示我们最多能容忍 1% 的良性样本被错误地标记为有害。
   target_fpr: 0.05
 
-  # [!] 新增：多目标优化中延迟项的权重 alpha。
-  # Score = TPR + alpha * (1 / (Delay + 1))
+  # [!] 新增：多目标优化中延迟项的权重 w。
+  # Score = TPR + w * (1 / (Delay + 1))
   # 建议值较小 (如 0.05 - 0.1)，以确保 TPR 仍然是主要优化目标。
   delay_weight: 0.1
 

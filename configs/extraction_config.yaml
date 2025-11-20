@@ -41,20 +41,20 @@ extraction:
   # 当 aggregation 为 "mean" 时，只使用窗口的前 k 个 token 计算平均值。
   # 这对于内容窗口特别有用，可以只关注生成的起始部分。
   # 设置为 0 或 null 表示使用所有 token。
-  mean_k: 64
+  mean_k: 0
 
 # --- 生成参数 ---
 # 控制“内容窗口” (W_cont) 的生成。
 generation:
   # 在初始提示/前缀之后要生成的新 token 数量。
   # 这会创建用于提取有害信号的内容窗口。
-  max_new_tokens: 128
+  max_new_tokens: 256
 
 # --- 处理参数 ---
 # 通用操作设置。
 processing:
   # 通过模型处理样本的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 4
+  batch_size: 6
   # 运行模型的设备。例如："cuda:0"、"cpu"。
   device: "cuda"
   # 对每个数据集随机采样的样本数量，用于快速验证。

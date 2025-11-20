@@ -22,6 +22,7 @@
     - 在 `(kappa, h)` 参数网格上进行搜索。
     - 对每个参数对，在 B1 和 A1 数据集上模拟 CUSUM 过程，计算误报率 (FPR) 和平均检测延迟。
     - 找到在满足目标误报率约束下，具有最低检测延迟的最佳 `(kappa, h)` 对。
+    - **[!] 优化**: 使用多进程并行处理网格搜索，加快校准速度。
 5.  **保存防御参数**:
     - 将所有校准得到的参数 (最优层、theta、kappa、h、以及对应的向量和变换) 保存到一个文件中，
       以供在线防御系统使用。
@@ -42,6 +43,8 @@ from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 import matplotlib.pyplot as plt
 import seaborn as sns
+import functools
+from multiprocessing import Pool, cpu_count
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -156,8 +159,19 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
     return trigger_rate, avg_delay
 
 
+def _evaluate_single_grid_point(params, benign_sequences, harmful_sequences, theta, benign_r_mean):
+    """
+    辅助函数：计算单个网格点 (kappa, h) 的 FPR 和 TPR。
+    必须位于顶层以便多进程 pickle。
+    """
+    kappa, h = params
+    fpr, _ = simulate_cusum(benign_sequences, theta, benign_r_mean, kappa, h)
+    tpr, delay = simulate_cusum(harmful_sequences, theta, benign_r_mean, kappa, h)
+    return {'kappa': kappa, 'h': h, 'fpr': fpr, 'tpr': tpr, 'delay': delay}
+
+
 def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
-    """通过网格搜索校准 CUSUM 的 kappa 和 h 参数。"""
+    """通过网格搜索校准 CUSUM 的 kappa 和 h 参数 (使用多进程)。"""
     logging.info(f"使用 theta={theta:.4f} 开始 CUSUM 参数网格搜索...")
 
     benign_r_flat = np.concatenate([torch.clamp(s - theta, min=0).numpy() for s in benign_sequences if s.numel() > 0])
@@ -168,19 +182,34 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
         benign_r_mean = benign_r_flat.mean()
     logging.info(f"良性风险分数 `r_t` 的均值 (用作 CUSUM 中的 mu_hat): {benign_r_mean:.4f}")
 
+    # 生成参数网格
     kappas = np.arange(grid_config['k_min'], grid_config['k_max'] + grid_config['k_step'], grid_config['k_step'])
     hs = np.arange(grid_config['h_min'], grid_config['h_max'] + grid_config['h_step'], grid_config['h_step'])
 
-    results = []
+    param_grid = [(k, h) for k in kappas for h in hs]
 
-    pbar = tqdm(total=len(kappas) * len(hs), desc="CUSUM 网格搜索")
-    for kappa in kappas:
-        for h in hs:
-            fpr, _ = simulate_cusum(benign_sequences, theta, benign_r_mean, kappa, h)
-            tpr, delay = simulate_cusum(harmful_sequences, theta, benign_r_mean, kappa, h)
-            results.append({'kappa': kappa, 'h': h, 'fpr': fpr, 'tpr': tpr, 'delay': delay})
-            pbar.update(1)
-    pbar.close()
+    # 获取配置的进程数，默认为 4
+    num_processes = grid_config.get('num_processes', 4)
+    if num_processes <= 0:
+        num_processes = cpu_count()
+
+    logging.info(f"启动多进程网格搜索 (Processes: {num_processes}, Total Points: {len(param_grid)})...")
+
+    # 使用 partial 固定数据参数，只变化 param_grid 中的 (kappa, h)
+    worker_func = functools.partial(
+        _evaluate_single_grid_point,
+        benign_sequences=benign_sequences,
+        harmful_sequences=harmful_sequences,
+        theta=theta,
+        benign_r_mean=benign_r_mean
+    )
+
+    results = []
+    # 使用 multiprocessing.Pool 并行处理
+    with Pool(processes=num_processes) as pool:
+        # 使用 imap 可以在处理时显示进度条
+        for res in tqdm(pool.imap(worker_func, param_grid), total=len(param_grid), desc="CUSUM Grid Search"):
+            results.append(res)
 
     results_df = pd.DataFrame(results)
 
@@ -261,7 +290,7 @@ def main():
     benign_scores_best_layer = benign_scores_by_layer[best_layer_idx]
     theta = np.quantile(benign_scores_best_layer, config['calibration_params']['theta_quantile'])
 
-    # 校准 CUSUM
+    # 校准 CUSUM (调用多进程版本)
     best_cusum_params, grid_search_results_df, benign_r_mean = calibrate_cusum(
         harmful_sequences_by_layer[best_layer_idx],
         benign_sequences_by_layer[best_layer_idx],

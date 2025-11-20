@@ -234,8 +234,12 @@ class HookManager:
         """
         if not self.captured_activations:
             return None
-        # 钩子按顺序触发，处理器按顺序消耗
-        return self.captured_activations.pop(0)
+
+        # 在一次 forward 中，读钩子会按照“填充阶段 -> 自回归阶段”的顺序多次触发。
+        # 我们只关心**最新**捕获的激活（对应当前 logits 的 token），
+        # 因此应弹出列表末尾的元素，而不是队列头。否则会错用最早的前缀 token，
+        # 造成检测延迟被整体平移一个 prompt 长度。
+        return self.captured_activations.pop()
 
     def clear_captured_activations(self):
         """
