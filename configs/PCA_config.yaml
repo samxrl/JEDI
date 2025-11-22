@@ -34,7 +34,7 @@ generation:
   max_new_tokens: 256
 processing:
   # 分数计算阶段的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 5
+  batch_size: 4
   device: "cuda"
 
 # --- 可选的可视化配置 ---
