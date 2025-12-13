@@ -4,11 +4,14 @@
 # 该文件指定了要使用的模型、要处理的数据以及如何提取隐藏状态激活。
 
 # 此项必须与 data_prep_config.yaml 中使用的 'llm_name' 匹配，以找到正确的输入文件。
-dataset_llm_name: "vicuna_7b_v1_5"
+#dataset_llm_name: "vicuna_7b_v1_5"
+dataset_llm_name: "mistral_7b_v2"
 
 # 用于加载以提取激活的 Hugging Face 模型标识符。
 # 理想情况下，这应与 `dataset_llm_name` 是同一个模型。
-model_name: "../../../models/vicuna_7b_v1_5"
+#model_name: "../../../models/vicuna_7b_v1_5"
+model_name: "../../../models/mistral_7b_v2"
+
 model_kwargs:
   # 使用 "auto" 自动选择最佳数据类型（例如，在 Ampere 架构上为 bfloat16）。
   # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
@@ -48,7 +51,7 @@ extraction:
 generation:
   # 在初始提示/前缀之后要生成的新 token 数量。
   # 这会创建用于提取有害信号的内容窗口。
-  max_new_tokens: 256
+  max_new_tokens: 128
 
 # --- 处理参数 ---
 # 通用操作设置。

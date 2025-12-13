@@ -296,7 +296,7 @@ def main():
     # --- 2. 设置路径和加载模型 ---
     base_dir = Path(__file__).parent.parent
     processed_data_dir = base_dir / config['processed_data_dir']
-    llm_name = config['model_name'].split('/')[-1]
+    llm_name = config['dataset_llm_name']
     output_dir = base_dir / config['output_dir'] / llm_name
     output_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"所有激活和输出文件将保存到: {output_dir}")

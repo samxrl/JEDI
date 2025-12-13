@@ -23,6 +23,7 @@
     - 对每个参数对，在 B1 和 A1 数据集上模拟 CUSUM 过程，计算误报率 (FPR) 和平均检测延迟。
     - 找到在满足目标误报率约束下，具有最低检测延迟的最佳 `(kappa, h)` 对。
     - **[!] 优化**: 使用多进程并行处理网格搜索，加快校准速度。
+    - **[!] 修复**: 将数据转换为 Numpy 格式传递给子进程，解决 "Too many open files" 错误。
 5.  **保存防御参数**:
     - 将所有校准得到的参数 (最优层、theta、kappa、h、以及对应的向量和变换) 保存到一个文件中，
       以供在线防御系统使用。
@@ -135,7 +136,11 @@ def find_best_layer(harmful_scores_by_layer, benign_scores_by_layer, layers):
 
 
 def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
-    """模拟 CUSUM 过程以计算触发率和延迟。"""
+    """
+    模拟 CUSUM 过程以计算触发率和延迟。
+
+    [!] 修改：支持 Numpy 数组输入，以避免多进程中的文件描述符耗尽问题。
+    """
     num_sequences = len(score_sequences)
     if num_sequences == 0: return 0.0, 0.0
 
@@ -143,11 +148,22 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
     total_delay = 0
 
     for scores in score_sequences:
-        if scores.numel() == 0: continue
-        r = torch.clamp(scores - theta, min=0)
+        # [!] 兼容处理：检查是 Tensor 还是 Numpy
+        if isinstance(scores, torch.Tensor):
+            if scores.numel() == 0: continue
+            scores_np = scores.numpy()
+        else:
+            # 假设是 Numpy array
+            if scores.size == 0: continue
+            scores_np = scores
+
+        # [!] 使用 Numpy 进行计算 (np.maximum 替代 torch.clamp)
+        r = np.maximum(scores_np - theta, 0)
+
         A = 0.0
         for t, r_t in enumerate(r):
-            A = max(0, A + r_t.item() - benign_r_mean - kappa)
+            # r_t 此时是 numpy scalar，直接运算即可
+            A = max(0, A + r_t - benign_r_mean - kappa)
             if A > h:
                 triggers += 1
                 total_delay += (t + 1)
@@ -165,6 +181,7 @@ def _evaluate_single_grid_point(params, benign_sequences, harmful_sequences, the
     必须位于顶层以便多进程 pickle。
     """
     kappa, h = params
+    # 这里的 sequences 已经是 Numpy 数组列表（在 calibrate_cusum 中转换的）
     fpr, _ = simulate_cusum(benign_sequences, theta, benign_r_mean, kappa, h)
     tpr, delay = simulate_cusum(harmful_sequences, theta, benign_r_mean, kappa, h)
     return {'kappa': kappa, 'h': h, 'fpr': fpr, 'tpr': tpr, 'delay': delay}
@@ -174,7 +191,12 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
     """通过网格搜索校准 CUSUM 的 kappa 和 h 参数 (使用多进程)。"""
     logging.info(f"使用 theta={theta:.4f} 开始 CUSUM 参数网格搜索...")
 
-    benign_r_flat = np.concatenate([torch.clamp(s - theta, min=0).numpy() for s in benign_sequences if s.numel() > 0])
+    # 计算良性均值 (此处仍可能处理 Tensor 列表，保持原有逻辑即可)
+    benign_r_flat = np.concatenate([
+        torch.clamp(s - theta, min=0).numpy() if isinstance(s, torch.Tensor) else np.maximum(s - theta, 0)
+        for s in benign_sequences if (s.numel() > 0 if isinstance(s, torch.Tensor) else s.size > 0)
+    ])
+
     if len(benign_r_flat) == 0:
         logging.warning("良性风险分数序列为空，无法计算均值。设为 0。")
         benign_r_mean = 0.0
@@ -195,11 +217,18 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
 
     logging.info(f"启动多进程网格搜索 (Processes: {num_processes}, Total Points: {len(param_grid)})...")
 
+    # --- [!] 关键修改：转换为 Numpy 列表 ---
+    # PyTorch Tensor 在多进程传递时会使用文件描述符（共享内存），大量小 Tensor 会耗尽句柄。
+    # Numpy Array 使用 Pickle 序列化，无此问题。
+    logging.info("正在将数据转换为 Numpy 格式以避免 'Too many open files' 错误...")
+    benign_sequences_np = [s.numpy() if isinstance(s, torch.Tensor) else s for s in benign_sequences]
+    harmful_sequences_np = [s.numpy() if isinstance(s, torch.Tensor) else s for s in harmful_sequences]
+
     # 使用 partial 固定数据参数，只变化 param_grid 中的 (kappa, h)
     worker_func = functools.partial(
         _evaluate_single_grid_point,
-        benign_sequences=benign_sequences,
-        harmful_sequences=harmful_sequences,
+        benign_sequences=benign_sequences_np,  # 传入 Numpy 数据
+        harmful_sequences=harmful_sequences_np,  # 传入 Numpy 数据
         theta=theta,
         benign_r_mean=benign_r_mean
     )

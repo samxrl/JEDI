@@ -168,7 +168,7 @@ class SarcLogitsProcessor(LogitsProcessor):
             # 5a. 计算动态 Alphas
             # (A_t / h)  clamped at 1.0 然后取 gamma 次方
             ratios = (A_t_device[active_indices] / self.h).clamp(min=1.0)
-            gamma = 2  # 或 1.5
+            gamma = 5  # 或 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_alphas[active_indices] = self.base_alpha * ratios
 
@@ -293,7 +293,7 @@ class Guard:
         intervention_vector = artifacts['intervention_vectors'][layer_id]
 
         # [!] 从 defense_params.yaml 加载 *基础* alpha
-        base_alpha = params.get('alpha', 10.0)  # 尝试键 'alpha'
+        base_alpha = params.get('alpha', 2.0)  # 尝试键 'alpha'
         if 'intervention_alpha' in params:  # 备用键
             base_alpha = params.get('intervention_alpha', 10.0)
 

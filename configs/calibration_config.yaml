@@ -5,7 +5,8 @@
 
 # 必须与 03_extract_vectors.py 中使用的 `llm_name` 匹配，
 # 以便在 `artifacts_dir` 和 `activations_dir` 中找到正确的子目录。
-llm_name: "vicuna_7b_v1_5"
+#llm_name: "vicuna_7b_v1_5"
+llm_name: "mistral_7b_v2"
 
 # --- 路径配置 (相对于项目根目录 SARC/) ---
 # 包含由 03_extract_vectors.py 生成的向量和变换矩阵的目录。
@@ -18,7 +19,7 @@ activations_dir: "data/activations"
 calibration_params:
   # [!] 新增: 控制并行处理的进程数量
   # 默认为 4。如果设为 0 或更小，则使用所有可用的 CPU 核心。
-  num_processes: 12
+  num_processes: 10
 
   # 用于计算边界阈值 theta 的分位数。
   # 直观上，这意味着在良性样本中，只有 (1 - quantile)% 的情况会产生非零的初始分数。
@@ -40,9 +41,9 @@ calibration_params:
 
   # h (报警阈值) 的范围和步长
   h_min: 0
-  h_max: 50
+  h_max: 60
   h_step: 1
   # k (容忍带) 的范围和步长
   k_min: 0
-  k_max: 50
+  k_max: 60
   k_step: 1

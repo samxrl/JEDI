@@ -5,14 +5,19 @@
 
 # 必须与 extraction_config.yaml 中的 `model_name` 的基本名称匹配。
 # 这用于在 `data_dir` 中定位正确的子目录。
-llm_name: "vicuna_7b_v1_5"
+#llm_name: "vicuna_7b_v1_5"
+llm_name: "mistral_7b_v2"
 
 # --- 模型配置 (用于逐 token 分数计算) ---
 # 在提取向量后，需要重新加载模型以计算分数。
-model_path: "../../../models/vicuna_7b_v1_5"
+#model_path: "../../../models/vicuna_7b_v1_5"
+model_path: "../../../models/mistral_7b_v2"
+
 model_kwargs:
   torch_dtype: "bfloat16"
   trust_remote_code: True
+  load_in_8bit: False
+
 
 # --- 路径配置 (相对于项目根目录 SARC/) ---
 # 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
@@ -31,10 +36,10 @@ decoupling:
 generation:
   # 在计算分数时，模型需要生成内容以获取隐藏状态。
   # 此值应与 extraction_config.yaml 中的 max_new_tokens 保持一致。
-  max_new_tokens: 256
+  max_new_tokens: 128
 processing:
   # 分数计算阶段的批量大小。根据显存（VRAM）进行调整。
-  batch_size: 4
+  batch_size: 6
   device: "cuda"
 
 # --- 可选的可视化配置 ---
