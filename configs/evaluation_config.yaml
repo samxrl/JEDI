@@ -9,6 +9,8 @@
 # 这用于在 `artifact_path` 中定位正确的防御产物子目录
 llm_name: "vicuna_7b_v1_5"
 #llm_name: "mistral_7b_v2"
+#llm_name: "Qwen2_5-7B-Instruct"
+
 
 # --- [新增] 评测流程控制 ---
 # 控制是否运行“可用性”(良性)数据集的评测 (FPR)
@@ -19,8 +21,8 @@ run_safety_evaluation: true
 # --- 1. 模型路径 ---
 # 要被评估（和保护）的基础 LLM
 llm_config:
-#  path: "../../../models/vicuna_7b_v1_5"
-  path: "../../../models/mistral_7b_v2"
+  path: "../../../models/vicuna_7b_v1_5"
+#  path: "../../../models/Qwen2_5-7B-Instruct"
 
   kwargs:
     torch_dtype: "bfloat16"
@@ -57,9 +59,9 @@ utility_dataset_config:
       filename: "benign-behaviors.csv" # 确保在 data_dir 中存在
       prompt_column: "Goal" # 良性数据集中的提示列名
 
-    - name: "or_bench" # 第二个数据集的示例
-      filename: "or-bench-80k.csv" # 确保在 data_dir 中存在
-      prompt_column: "prompt" # 此文件的提示列名
+#    - name: "or_bench" # 第二个数据集的示例
+#      filename: "or-bench-80k.csv" # 确保在 data_dir 中存在
+#      prompt_column: "prompt" # 此文件的提示列名
 
     # 您可以在此处添加更多数据集...
     # - name: "another_set"
@@ -91,8 +93,9 @@ safety_dataset_config:
 #    - "new_tap"
 #    - "new_autodan"
 #    - "DEV_MODE_Ranti"
-    - "new_gptfuzzer"
-    - "new_deepinception"
+#    - "new_gptfuzzer"
+#    - "new_deepinception"
+    - "AIM"
 
 
   # 安全性数据集的采样大小 (0 表示全部)
