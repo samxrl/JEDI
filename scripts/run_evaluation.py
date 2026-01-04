@@ -22,6 +22,8 @@
 ** [!] 此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
 1.  新增 `run_utility_evaluation` 和 `run_safety_evaluation` 配置项。
 2.  根据配置项条件性地加载数据集和执行评测。
+
+** [!] 修改：在测试 utility 数据集时，添加了耗时统计。 **
 """
 
 import argparse
@@ -35,6 +37,7 @@ import gc
 import sys
 import json
 import contextlib
+import time  # [!] 新增：导入 time 模块用于计时
 from typing import Dict, List, Any, Optional, Tuple
 import importlib.util
 
@@ -591,15 +594,45 @@ def main():
                 logger.info(f"--- 正在评估良性数据集: {dataset_name} ---")
                 df_utility_subset = df_utility_all[df_utility_all['utility_dataset_name'] == dataset_name].reset_index(drop=True)
                 prompts = df_utility_subset['prompt'].tolist()
+                num_samples = len(prompts)
 
                 if not prompts:
                     logger.warning(f"良性数据集 {dataset_name} 没有可运行的提示，跳过。")
                     continue
 
+                # Guarded
+                # [!] 添加计时统计
+                start_time = time.time()
+                guarded_outputs, guarded_triggers = run_generation(
+                    model, tokenizer, prompts, gen_config, batch_size, guard=guard
+                )
+                end_time = time.time()
+                total_duration = end_time - start_time
+                avg_duration = total_duration / num_samples if num_samples > 0 else 0
+                logger.info(f"[Utility - {dataset_name}] Guarded 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
+
+                df_guarded = df_utility_subset.copy()
+                df_guarded['assistant_output'] = guarded_outputs
+                df_guarded['trigger_step'] = guarded_triggers
+                df_guarded['condition'] = 'guarded'
+                df_guarded['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
+                all_results_dfs.append(df_guarded)
+
+                del guarded_outputs, guarded_triggers, df_guarded
+                gc.collect()
+                if device == "cuda": torch.cuda.empty_cache()
+
                 # Baseline
+                # [!] 添加计时统计
+                start_time = time.time()
                 baseline_outputs, baseline_triggers = run_generation(
                     model, tokenizer, prompts, gen_config, batch_size, guard=None
                 )
+                end_time = time.time()
+                total_duration = end_time - start_time
+                avg_duration = total_duration / num_samples if num_samples > 0 else 0
+                logger.info(f"[Utility - {dataset_name}] Baseline 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
+
                 df_baseline = df_utility_subset.copy()
                 df_baseline['assistant_output'] = baseline_outputs
                 df_baseline['trigger_step'] = baseline_triggers
@@ -612,20 +645,6 @@ def main():
                 gc.collect()
                 if device == "cuda": torch.cuda.empty_cache()
 
-                # Guarded
-                guarded_outputs, guarded_triggers = run_generation(
-                    model, tokenizer, prompts, gen_config, batch_size, guard=guard
-                )
-                df_guarded = df_utility_subset.copy()
-                df_guarded['assistant_output'] = guarded_outputs
-                df_guarded['trigger_step'] = guarded_triggers
-                df_guarded['condition'] = 'guarded'
-                df_guarded['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
-                all_results_dfs.append(df_guarded)
-
-                del guarded_outputs, guarded_triggers, df_guarded
-                gc.collect()
-                if device == "cuda": torch.cuda.empty_cache()
         else:
             logger.warning("跳过可用性评估，因为数据集为空或配置为跳过。")
 

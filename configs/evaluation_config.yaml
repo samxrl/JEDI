@@ -108,7 +108,7 @@ generation_kwargs:
   do_sample: false
 
 # 评测时使用的批量大小。根据显存（VRAM）进行调整。
-batch_size: 4
+batch_size: 1
 # 分类器模型的批量大小 (通常需要更小)
 classifier_batch_size: 1
 # 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
