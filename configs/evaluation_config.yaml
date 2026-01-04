@@ -51,7 +51,7 @@ output_dir: "data/evaluations"
 utility_dataset_config:
   # 应用于所有良性数据集的 *总* 采样大小 (0 表示全部)
   # 脚本将尝试从下面的数据集中等额抽取，直到达到此总数。
-  sample_size: 10
+  sample_size: 0
 
   # 定义一个或多个要加载的良性数据集
   datasets:
@@ -67,6 +67,10 @@ utility_dataset_config:
      - name: "alpaca_eval"
        filename: "alpaca_eval.json"
        prompt_column: "instruction"
+
+#     - name: "xstest"
+#       filename: "xstest_prompts.csv"
+#       prompt_column: "prompt"
 
 # 用于评估“安全性”
 safety_dataset_config:

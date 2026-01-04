@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-脚本 05: 运行防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)
+脚本 05: 运行防御评估 (支持 jbb_expanded.csv, alpaca_eval.json 和 xstest_prompts.csv)
 
 该脚本是 JEDI 流程的最后一步，用于验证 `04_calibrate_defense.py`
 校准后的防御系统的实际效果。
@@ -18,6 +18,7 @@
 2.  实现了基于配额的等额采样逻辑。
 3.  评估和保存阶段现在会为每个良性数据集分别生成报告。
 4.  **新增**: 特别支持 `alpaca_eval` 格式输出。
+5.  **新增**: 特别支持 `xstest` (xstest_prompts.csv) 格式输出 (8列 CSV)。
 
 ** [!] 此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
 1.  新增 `run_utility_evaluation` 和 `run_safety_evaluation` 配置项。
@@ -153,12 +154,12 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
                     df.rename(columns={prompt_col: 'prompt'}, inplace=True)
 
                 # 确保 alpaca_eval 所需的字段存在（如果原文件有，pd.DataFrame会自动保留）
-                # dataset, generator 通常不在输入文件中，或者 generator 是空的
                 if 'dataset' not in df.columns:
                     df['dataset'] = name  # 使用配置名称作为 dataset 字段的默认值
 
             else:
-                # CSV 格式处理
+                # CSV 格式处理 (包括 XSTest, OR-Bench 等)
+                # 注意：pd.read_csv 会保留所有列，包括 xstest 的 'id' 和 'type'
                 df = pd.read_csv(file_path)
                 if prompt_col not in df.columns:
                     logger.error(f"可用性数据集 {file_path} 缺少列 '{prompt_col}'。跳过。")
@@ -821,17 +822,12 @@ def main():
             if df_utility_subset.empty: continue
 
             # [!] 修改：不再计算 FPR，因为 label 缺失或 N/A
-            logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV & Alpaca JSON)...")
+            logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV)...")
 
             # [!] 为这个特定的数据集保存独立的文件
             try:
                 utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
                 df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
-
-                # 如果确实需要一个空的 summary 文件以防 pipeline 报错，可以生成一个占位符
-                # utility_json_path = output_dir / f"{llm_name}_evaluation_summary_utility_{dataset_name}.json"
-                # with open(utility_json_path, 'w', encoding='utf-8') as f:
-                #     json.dump({"note": "FPR calculation skipped by user request."}, f, indent=2)
 
                 logger.info(f"已保存可用性 (Utility) '{dataset_name}' 详细 CSV 到: {utility_csv_path.name}")
 
@@ -865,6 +861,55 @@ def main():
                     df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
                     if not df_guard.empty:
                         save_alpaca_format(df_guard, f"{llm_name}-alpaca_eval-JEDI.json", f"{llm_name}-JEDI")
+
+                # --- [新增] XSTest 特定格式输出 ---
+                if "xstest" in str(dataset_name).lower():
+                    logger.info(f"检测到 xstest 数据集 ('{dataset_name}')，正在生成专用的评估 CSV 文件...")
+
+                    def save_xstest_format(sub_df, out_filename):
+                        # 准备 8 列数据
+                        target_cols = ['id', 'type', 'prompt', 'completion', 'annotation_1', 'annotation_2', 'agreement', 'final_label']
+                        xstest_out = pd.DataFrame()
+
+                        # 映射列
+                        # id
+                        if 'id' in sub_df.columns:
+                            xstest_out['id'] = sub_df['id']
+                        else:
+                            xstest_out['id'] = range(1, len(sub_df) + 1)
+
+                        # type
+                        if 'type' in sub_df.columns:
+                            xstest_out['type'] = sub_df['type']
+                        else:
+                            xstest_out['type'] = 'N/A'
+
+                        # prompt
+                        xstest_out['prompt'] = sub_df['prompt']
+
+                        # completion (即 assistant_output)
+                        xstest_out['completion'] = sub_df['assistant_output']
+
+                        # 占位符列
+                        for col in ['annotation_1', 'annotation_2', 'agreement', 'final_label']:
+                            xstest_out[col] = None
+
+                            # 确保列顺序
+                        xstest_out = xstest_out[target_cols]
+
+                        out_path = output_dir / out_filename
+                        xstest_out.to_csv(out_path, index=False, encoding='utf-8-sig')
+                        logger.info(f"XSTest 格式结果已保存到: {out_path.name}")
+
+                    # 保存 Baseline
+                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
+                    if not df_base.empty:
+                        save_xstest_format(df_base, f"{llm_name}_xstest_baseline.csv")
+
+                    # 保存 Guarded (JEDI)
+                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
+                    if not df_guard.empty:
+                        save_xstest_format(df_guard, f"{llm_name}_xstest_guarded.csv")
 
             except Exception as e:
                 logger.error(f"保存可用性 (Utility) '{dataset_name}' 结果文件时失败: {e}", exc_info=True)
