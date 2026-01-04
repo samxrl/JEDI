@@ -2,7 +2,7 @@
 """
 工具：日志设置
 
-提供一个简单的函数来配置 SARC 包的日志记录。
+提供一个简单的函数来配置 JEDI 包的日志记录。
 这有助于在 `Guard` 运行时提供标准化的、可控的日志输出，
 方便调试和审计。
 """
@@ -13,7 +13,7 @@ import sys
 
 def setup_logging(level=logging.INFO, stream=sys.stdout):
     """
-    配置 SARC 包（或根日志记录器）的日志记录。
+    配置 JEDI 包（或根日志记录器）的日志记录。
 
     Args:
         level (int, optional):
@@ -22,11 +22,11 @@ def setup_logging(level=logging.INFO, stream=sys.stdout):
         stream (IO, optional):
             日志输出流。默认为 sys.stdout。
     """
-    # 获取 'repeng_guard' 包的根日志记录器
+    # 获取 'JEDI_guard' 包的根日志记录器
     # 如果在包外部使用，可以改为获取根日志记录器：
     # logger = logging.getLogger()
 
-    logger = logging.getLogger('repeng_guard')
+    logger = logging.getLogger('JEDI_guard')
     if logger.hasHandlers():
         # 如果已经配置过，则不再重复配置
         return

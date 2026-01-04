@@ -1,4 +1,4 @@
-# SARC/configs/judgment_config.yaml
+# JEDI/configs/judgment_config.yaml
 #
 # 02_judge_harmfulness.py 脚本的配置文件。
 # 该脚本用于评估由 02_extract_activations.py 生成的 assistant_output 的有害性。
@@ -19,7 +19,7 @@ classifier_model_kwargs:
   # 使用 "auto" 来自动分配模型到可用的 GPU。
   device_map: "auto"
 
-# --- 路径配置 (相对于项目根目录 SARC/) ---
+# --- 路径配置 (相对于项目根目录 JEDI/) ---
 # 存放由 02_extract_activations.py 生成的 *_outputs.csv 文件的目录。
 # 这应与 extraction_config.yaml 中的 'output_dir' 相同。
 data_dir: "data/activations"

@@ -2,7 +2,7 @@
 """
 【核心】Guard 类
 
-该文件定义了 Guard 类，它是 SARC 防御系统的一站式入口，
+该文件定义了 Guard 类，它是 JEDI 防御系统的一站式入口，
 封装了所有在线防御逻辑，实现了“方法流程.md”中的阶段 5 和 6。
 
 [!] 修改：
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 class SarcLogitsProcessor(LogitsProcessor):
     """
-    SARC 防御的核心逻辑处理器。
+    JEDI 防御的核心逻辑处理器。
     在 `generate` 循环的每个 token 生成步骤中被调用。
 
     [!] 修改：实现动态 alpha 计算和干预状态管理。
@@ -56,7 +56,7 @@ class SarcLogitsProcessor(LogitsProcessor):
 
     def __init__(self, guard_instance, batch_size: int, trigger_logs: List[int]):
         """
-        初始化 SARC LogitsProcessor。
+        初始化 JEDI LogitsProcessor。
 
         Args:
             guard_instance (Guard):
@@ -113,7 +113,7 @@ class SarcLogitsProcessor(LogitsProcessor):
         try:
             hidden_state = self.guard.hook_manager.get_last_captured_activation()
             if hidden_state is None:
-                logger.warning("SARC: 未能从 HookManager 获取隐藏状态。跳过本轮检测。")
+                logger.warning("JEDI: 未能从 HookManager 获取隐藏状态。跳过本轮检测。")
                 self.current_step += 1  # [!] 确保步骤计数器增加
                 return scores
 
@@ -121,13 +121,13 @@ class SarcLogitsProcessor(LogitsProcessor):
                 hidden_state = hidden_state.unsqueeze(1)  # (B, D) -> (B, 1, D)
 
             if hidden_state.shape[0] != scores.shape[0]:
-                logger.error(f"SARC: 隐藏状态批量大小 ({hidden_state.shape[0]}) 与 "
+                logger.error(f"JEDI: 隐藏状态批量大小 ({hidden_state.shape[0]}) 与 "
                              f"Logits 批量大小 ({scores.shape[0]}) 不匹配。")
                 self.current_step += 1  # [!] 确保步骤计数器增加
                 return scores
 
         except Exception as e:
-            logger.error(f"SARC: 获取隐藏状态时出错: {e}", exc_info=True)
+            logger.error(f"JEDI: 获取隐藏状态时出错: {e}", exc_info=True)
             self.current_step += 1  # [!] 确保步骤计数器增加
             return scores
 
@@ -158,7 +158,7 @@ class SarcLogitsProcessor(LogitsProcessor):
                     self.trigger_logs[idx] = self.current_step
 
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"SARC: CUSUM 在第 {self.current_step} 步 *首次* 触发。激活以下序列: "
+                logger.debug(f"JEDI: CUSUM 在第 {self.current_step} 步 *首次* 触发。激活以下序列: "
                              f"{newly_triggered.nonzero(as_tuple=True)[0].tolist()}")
 
         # 5. [!] 如果 *任何* 序列（新的或旧的）处于激活状态，则计算 alpha' 并设置钩子
@@ -194,7 +194,7 @@ class SarcLogitsProcessor(LogitsProcessor):
 
 class Guard:
     """
-    SARC 防御系统的主类。
+    JEDI 防御系统的主类。
     通过上下文管理器 (`with guard.attach(model): ...`) 来使用。
     """
 
@@ -398,7 +398,7 @@ class Guard:
 
     def _guarded_generate(self, *args, **kwargs) -> Any:
         """
-        这是修补后的 `generate` 方法，它会注入 SARC 防御逻辑。
+        这是修补后的 `generate` 方法，它会注入 JEDI 防御逻辑。
         """
         if self.hook_manager is None or self.original_generate is None:
             raise RuntimeError("Guard 尚未附加到模型。请使用 `with guard.attach(model): ...`。")
@@ -416,7 +416,7 @@ class Guard:
             elif len(args) > 0 and isinstance(args[0], torch.Tensor):
                 input_ids = args[0]
             else:
-                logger.warning("SARC: 无法在 generate 调用中确定 input_ids。假定批量为 1。")
+                logger.warning("JEDI: 无法在 generate 调用中确定 input_ids。假定批量为 1。")
                 batch_size = 1
         else:
             batch_size = input_ids.shape[0]
@@ -425,16 +425,16 @@ class Guard:
         self.hook_manager.clear_captured_activations()
         self.hook_manager.clear_intervention_state()
 
-        # 3. 初始化 SARC LogitsProcessor，并传入日志列表
+        # 3. 初始化 JEDI LogitsProcessor，并传入日志列表
         # --- 修改：从 Guard 实例获取日志列表 ---
         trigger_logs = self.current_batch_trigger_logs
         if trigger_logs is None:
-            logger.warning("SARC: Guarded generate 被调用，但没有设置批量日志目标 "
+            logger.warning("JEDI: Guarded generate 被调用，但没有设置批量日志目标 "
                            "(set_batch_log_target)。触发步骤将不会被记录。")
             # 创建一个临时的 dummy 列表以防止崩溃
             trigger_logs = [-1] * batch_size
         elif len(trigger_logs) != batch_size:
-            logger.error(f"SARC: 提供的日志列表长度 ({len(trigger_logs)}) 与 "
+            logger.error(f"JEDI: 提供的日志列表长度 ({len(trigger_logs)}) 与 "
                          f"批量大小 ({batch_size}) 不匹配。")
             # 同样使用 dummy 列表
             trigger_logs = [-1] * batch_size

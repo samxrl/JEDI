@@ -1,4 +1,4 @@
-# SARC/configs/PCA_config.yaml
+# JEDI/configs/PCA_config.yaml
 #
 # 03_extract_vectors.py 脚本的配置文件。
 # 该文件用于控制向量提取和后续的逐 token 分数计算。
@@ -19,7 +19,7 @@ model_kwargs:
   load_in_8bit: False
 
 
-# --- 路径配置 (相对于项目根目录 SARC/) ---
+# --- 路径配置 (相对于项目根目录 JEDI/) ---
 # 包含由 02_extract_activations.py 生成的激活和输出文件的目录。
 data_dir: "data/activations"
 # 保存最终产物（向量、变换、分数）的目录。

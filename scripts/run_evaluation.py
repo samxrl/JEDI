@@ -2,7 +2,7 @@
 """
 脚本 05: 运行防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)
 
-该脚本是 SARC 流程的最后一步，用于验证 `04_calibrate_defense.py`
+该脚本是 JEDI 流程的最后一步，用于验证 `04_calibrate_defense.py`
 校准后的防御系统的实际效果。
 
 ** [!] 此版本已根据内存优化请求进行修改 **
@@ -49,9 +49,9 @@ if str(scripts_path) not in sys.path:
     sys.path.insert(0, str(scripts_path))
 
 try:
-    from repeng_guard import Guard
+    from JEDI_guard import Guard
 except ImportError:
-    print(f"ERROR: 无法导入 repeng_guard。请确保 'src' 目录在 sys.path 中: {src_path}")
+    print(f"ERROR: 无法导入 JEDI_guard。请确保 'src' 目录在 sys.path 中: {src_path}")
     sys.exit(1)
 
 # --- 动态导入 LLAMA2_CLS_PROMPT ---
@@ -488,7 +488,7 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="运行 SARC 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
+    parser = argparse.ArgumentParser(description="运行 JEDI 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
     parser.add_argument('--config', type=str, default='configs/evaluation_config.yaml',
                         help='评估配置文件路径。')
     args = parser.parse_args()
@@ -535,7 +535,7 @@ def main():
     logger.info("--- 阶段 1: 开始文本生成 ---")
     try:
         # --- 3. 加载 Guard ---
-        logger.info("--- 正在加载 SARC Guard ---")
+        logger.info("--- 正在加载 JEDI Guard ---")
         artifact_path = base_dir / config['artifact_path'] / llm_name
         try:
             guard = Guard.from_artifacts(

@@ -9,10 +9,10 @@ HookManager (钩子管理器)
 - `_write_hook` 将 `dynamic_alphas` 传递给干预函数。
 
 核心职责:
-1.  充当模型 (`model`) 和 SARC 处理器 (`SarcLogitsProcessor`) 之间的桥梁。
+1.  充当模型 (`model`) 和 JEDI 处理器 (`SarcLogitsProcessor`) 之间的桥梁。
 2.  提供 `attach_read_hook` 方法，在目标层注册一个 PyTorch
     `register_forward_hook`，用于“读取”隐藏状态。
-3.  提供 `set_intervention_state` 方法，允许 SARC 处理器
+3.  提供 `set_intervention_state` 方法，允许 JEDI 处理器
     动态地请求在下一
     个 forward 传递中“写入”（即干预）隐藏状态。
 4.  管理读/写钩子的句柄 (`handle`)，并在 `detach` 时正确移除它们，
@@ -106,7 +106,7 @@ class HookManager:
             hidden_state = output
 
         if hidden_state is None:
-            logger.warning(f"SARC 读钩子在第 {self.layer_id} 层收到了空的输出。")
+            logger.warning(f"JEDI 读钩子在第 {self.layer_id} 层收到了空的输出。")
             return
 
         # --- 错误修复：---
@@ -125,7 +125,7 @@ class HookManager:
 
         else:
             # 异常情况
-            logger.warning(f"SARC 读钩子: 收到意外的隐藏状态维度: "
+            logger.warning(f"JEDI 读钩子: 收到意外的隐藏状态维度: "
                            f"{hidden_state.dim()}。跳过捕获。")
             return
 
@@ -170,7 +170,7 @@ class HookManager:
             original_hidden_state = output
 
         if original_hidden_state is None:
-            logger.warning(f"SARC 写钩子在第 {self.layer_id} 层收到了空的输出。")
+            logger.warning(f"JEDI 写钩子在第 {self.layer_id} 层收到了空的输出。")
             return output
 
         # 2. 应用干预函数

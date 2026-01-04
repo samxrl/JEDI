@@ -1,4 +1,4 @@
-# SARC/configs/extraction_config.yaml
+# JEDI/configs/extraction_config.yaml
 #
 # 02_extract_activations.py 脚本的配置文件。
 # 该文件指定了要使用的模型、要处理的数据以及如何提取隐藏状态激活。
@@ -19,7 +19,7 @@ model_kwargs:
   trust_remote_code: True
   load_in_8bit: False
 
-# --- 路径（相对于项目根目录 SARC/）---
+# --- 路径（相对于项目根目录 JEDI/）---
 # 脚本 01 处理后的数据集所在的目录。
 processed_data_dir: "data/processed"
 # 输出激活文件 (.pt) 将被保存的目录。

@@ -1,8 +1,8 @@
-# SARC/configs/data_prep_config.yaml
+# JEDI/configs/data_prep_config.yaml
 #
 # 用于 01_prepare_datasets.py 脚本的配置文件。
 # 请根据你的实际文件路径和需求进行修改。
-# 所有路径都是相对于项目根目录 (SARC/) 的。
+# 所有路径都是相对于项目根目录 (JEDI/) 的。
 
 # 指定处理后文件的输出目录
 output_dir: data/processed

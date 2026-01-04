@@ -1,4 +1,4 @@
-# SARC/configs/calibration_config.yaml
+# JEDI/configs/calibration_config.yaml
 #
 # 04_calibrate_defense.py 脚本的配置文件。
 # 用于校准在线防御所需的各种参数。
@@ -8,7 +8,7 @@
 #llm_name: "vicuna_7b_v1_5"
 llm_name: "mistral_7b_v2"
 
-# --- 路径配置 (相对于项目根目录 SARC/) ---
+# --- 路径配置 (相对于项目根目录 JEDI/) ---
 # 包含由 03_extract_vectors.py 生成的向量和变换矩阵的目录。
 # 校准后的 defense_config.json 也将保存于此。
 artifacts_dir: "data/activations"

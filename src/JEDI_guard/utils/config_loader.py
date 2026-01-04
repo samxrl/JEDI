@@ -3,7 +3,7 @@
 工具：防御产物加载器
 
 该文件提供了一个核心辅助函数 `load_defense_artifacts`，
-用于从指定的目录中加载所有 SARC 防御所需的离线产物。
+用于从指定的目录中加载所有 JEDI 防御所需的离线产物。
 
 根据 `PROJECT_STRUCTURE.md` 和 `03/04` 号脚本，这些产物包括：
 - `defense_params.yaml`: 包含校准后的参数 (theta, mu_hat, kappa, h, best_layer)。
@@ -28,7 +28,7 @@ def load_defense_artifacts(
         device: Optional[str] = 'cpu'
 ) -> Dict[str, Any]:
     """
-    从指定目录加载所有 SARC 防御产物。
+    从指定目录加载所有 JEDI 防御产物。
 
     Args:
         artifact_path (str):

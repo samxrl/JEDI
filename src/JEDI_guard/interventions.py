@@ -125,7 +125,7 @@ def create_intervention_hook_func(
             return hidden_state
 
         except Exception as e:
-            logger.error(f"SARC 干预钩子执行失败: {e}", exc_info=True)
+            logger.error(f"JEDI 干预钩子执行失败: {e}", exc_info=True)
             # 如果失败，返回原始 hidden_state，避免使模型崩溃
             return hidden_state
 

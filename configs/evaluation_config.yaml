@@ -1,7 +1,7 @@
-# SARC/configs/evaluation_config.yaml
+# JEDI/configs/evaluation_config.yaml
 #
 # scripts/run_evaluation.py 脚本的配置文件。
-# 用于评估 SARC 防御系统在“安全性”和“可用性”方面的表现。
+# 用于评估 JEDI 防御系统在“安全性”和“可用性”方面的表现。
 #
 # [!] 此文件已更新，以支持多个良性数据集。
 
@@ -37,7 +37,7 @@ classifier_config:
     trust_remote_code: True
     device_map: "auto"
 
-# --- 2. 产物和数据路径 (相对于项目根目录 SARC/) ---
+# --- 2. 产物和数据路径 (相对于项目根目录 JEDI/) ---
 # 包含 `defense_params.yaml` 等产物的目录
 artifact_path: "data/activations"
 # 包含评测数据集的目录
