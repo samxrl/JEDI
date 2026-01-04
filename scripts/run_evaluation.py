@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-脚本 05: 运行防御评估 (支持 jbb_expanded.csv)
+脚本 05: 运行防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)
 
 该脚本是 SARC 流程的最后一步，用于验证 `04_calibrate_defense.py`
 校准后的防御系统的实际效果。
@@ -14,9 +14,10 @@
 3.  **阶段 3 (报告)**: 计算所有指标并保存到文件。
 
 ** [!] 此版本已修改，支持加载和评估多个良性数据集。 **
-1.  `load_utility_dataset` 现在从配置中加载一个数据集列表。
+1.  `load_utility_dataset` 现在从配置中加载一个数据集列表，支持 CSV 和 JSON。
 2.  实现了基于配额的等额采样逻辑。
 3.  评估和保存阶段现在会为每个良性数据集分别生成报告。
+4.  **新增**: 特别支持 `alpaca_eval` 格式输出。
 
 ** [!] 此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
 1.  新增 `run_utility_evaluation` 和 `run_safety_evaluation` 配置项。
@@ -107,8 +108,9 @@ def load_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str) -
 def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 0) -> pd.DataFrame:
     """
     [!! 已修改 !!]
-    从 CSV 文件加载一个或多个“可用性”(良性)评估数据集。
+    从 CSV 或 JSON 文件加载一个或多个“可用性”(良性)评估数据集。
     支持基于配额的等额采样。
+    支持 alpaca_eval.json 格式。
     """
     logger.info("正在加载可用性 (Utility) 数据集...")
     dataset_list = config.get('datasets')
@@ -120,10 +122,11 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
     for dataset_config in dataset_list:
         name = dataset_config.get('name')
         filename = dataset_config.get('filename')
-        prompt_col = dataset_config.get('prompt_column')
+        # prompt_column 对于 json 可能是 instruction，对于 csv 可能是列名
+        prompt_col = dataset_config.get('prompt_column', 'prompt')
 
-        if not name or not filename or not prompt_col:
-            logger.warning(f"跳过一个无效的良性数据集条目 (缺少 name, filename, 或 prompt_column): {dataset_config}")
+        if not name or not filename:
+            logger.warning(f"跳过一个无效的良性数据集条目 (缺少 name 或 filename): {dataset_config}")
             continue
 
         file_path = data_dir / filename
@@ -132,12 +135,33 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
             continue
 
         try:
-            df = pd.read_csv(file_path)
-            if prompt_col not in df.columns:
-                logger.error(f"可用性数据集 {file_path} 缺少列 '{prompt_col}'。跳过。")
-                continue
+            # [!] 新增：支持 JSON 格式 (特别是 alpaca_eval)
+            if filename.lower().endswith('.json'):
+                logger.info(f"检测到 JSON 文件: {filename}，正在加载...")
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                df = pd.DataFrame(data)
 
-            df.rename(columns={prompt_col: 'prompt'}, inplace=True)
+                # 如果是 alpaca_eval 常见格式，instruction 实际上是 prompt
+                if 'instruction' in df.columns and 'prompt' not in df.columns:
+                    logger.info("检测到 'instruction' 列，将其映射为 'prompt'。")
+                    df['prompt'] = df['instruction']
+                elif prompt_col in df.columns and prompt_col != 'prompt':
+                    df.rename(columns={prompt_col: 'prompt'}, inplace=True)
+
+                # 确保 alpaca_eval 所需的字段存在（如果原文件有，pd.DataFrame会自动保留）
+                # dataset, generator 通常不在输入文件中，或者 generator 是空的
+                if 'dataset' not in df.columns:
+                    df['dataset'] = name  # 使用配置名称作为 dataset 字段的默认值
+
+            else:
+                # CSV 格式处理
+                df = pd.read_csv(file_path)
+                if prompt_col not in df.columns:
+                    logger.error(f"可用性数据集 {file_path} 缺少列 '{prompt_col}'。跳过。")
+                    continue
+                df.rename(columns={prompt_col: 'prompt'}, inplace=True)
+
             # [!] 关键：添加数据集名称
             df['utility_dataset_name'] = name
 
@@ -229,9 +253,16 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
     """
     加载并转换“安全性”(JBB)评估数据集 (从宽表到长表)。
     """
+    # [!] 修改：预先检查攻击列配置
+    # 如果 attack_columns_to_eval 为 None 或空，直接跳过加载，防止后续报错
+    attack_cols = config.get('attack_columns_to_eval')
+    if not attack_cols:
+        logger.info("配置中 'attack_columns_to_eval' 为空或 None，跳过安全性数据集加载。")
+        return pd.DataFrame()
+
     file_path = data_dir / config['filename']
     base_cols = config['base_columns']
-    attack_cols = config['attack_columns_to_eval']
+    # attack_cols = config['attack_columns_to_eval'] # 上方已获取
 
     if not file_path.exists():
         logger.warning(f"安全性数据集文件未找到: {file_path}。返回空数据帧。")
@@ -429,6 +460,8 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
         return metrics
 
     # 1. 计算有害率 (ASR / FPR)
+    # [!] 注意：如果未运行分类，label 列将为 pd.NA 或 'skipped'
+    # 这种情况下，harmful_count 将为 0，rate 为 0.0
     harmful_count = (df['label'] == 'yes').sum()
     rate = harmful_count / total if total > 0 else 0.0
 
@@ -455,7 +488,7 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="运行 SARC 防御评估 (支持 jbb_expanded.csv 和多个良性数据集)。")
+    parser = argparse.ArgumentParser(description="运行 SARC 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
     parser.add_argument('--config', type=str, default='configs/evaluation_config.yaml',
                         help='评估配置文件路径。')
     args = parser.parse_args()
@@ -527,7 +560,7 @@ def main():
 
         # --- 7. 加载数据集 ---
         # [!] 修改：根据 run_utility 标志条件性加载
-        df_utility_all = pd.DataFrame() # [!] 初始化为空
+        df_utility_all = pd.DataFrame()  # [!] 初始化为空
         if run_utility:
             logger.info("正在加载“可用性”数据集...")
             utility_config = config['utility_dataset_config']
@@ -537,7 +570,7 @@ def main():
             logger.info("根据配置，跳过加载“可用性”数据集。")
 
         # [!] 修改：根据 run_safety 标志条件性加载
-        df_safety_long = pd.DataFrame() # [!] 初始化为空
+        df_safety_long = pd.DataFrame()  # [!] 初始化为空
         if run_safety:
             logger.info("正在加载“安全性”数据集...")
             safety_config = config['safety_dataset_config']
@@ -571,7 +604,7 @@ def main():
                 df_baseline['assistant_output'] = baseline_outputs
                 df_baseline['trigger_step'] = baseline_triggers
                 df_baseline['condition'] = 'baseline'
-                df_baseline['dataset'] = 'utility'
+                df_baseline['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
                 # 'attack_method' 和 'utility_dataset_name' 已在加载时设置
                 all_results_dfs.append(df_baseline)
 
@@ -587,7 +620,7 @@ def main():
                 df_guarded['assistant_output'] = guarded_outputs
                 df_guarded['trigger_step'] = guarded_triggers
                 df_guarded['condition'] = 'guarded'
-                df_guarded['dataset'] = 'utility'
+                df_guarded['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
                 all_results_dfs.append(df_guarded)
 
                 del guarded_outputs, guarded_triggers, df_guarded
@@ -620,7 +653,7 @@ def main():
                 df_baseline['assistant_output'] = baseline_outputs
                 df_baseline['trigger_step'] = baseline_triggers
                 df_baseline['condition'] = 'baseline'
-                df_baseline['dataset'] = 'safety'
+                df_baseline['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
                 all_results_dfs.append(df_baseline)
 
                 del df_baseline, baseline_outputs, baseline_triggers
@@ -635,7 +668,7 @@ def main():
                 df_guarded['assistant_output'] = guarded_outputs
                 df_guarded['trigger_step'] = guarded_triggers
                 df_guarded['condition'] = 'guarded'
-                df_guarded['dataset'] = 'safety'
+                df_guarded['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
                 all_results_dfs.append(df_guarded)
 
                 del df_guarded, guarded_outputs, guarded_triggers
@@ -685,7 +718,7 @@ def main():
 
         base_cols_config = config.get('safety_dataset_config', {}).get('base_columns', [])
         ordered_cols = base_cols_config + [
-            'attack_method', 'utility_dataset_name', 'dataset', 'condition', 'prompt', 'assistant_output', 'trigger_step'
+            'attack_method', 'utility_dataset_name', 'eval_split', 'dataset', 'condition', 'prompt', 'assistant_output', 'trigger_step'
         ]
         current_cols = final_results_df.columns
         final_ordered_cols = [c for c in ordered_cols if c in current_cols]
@@ -703,21 +736,38 @@ def main():
         logger.warning(f"保存 CSV 文件失败: {e}", exc_info=True)
 
     try:
-        # --- 5. 加载分类器 LLM ---
-        logger.info("--- 正在加载分类器 LLM ---")
-        classifier_config = config['classifier_config']
-        classifier_batch_size = config.get('classifier_batch_size', 2)
-        classifier_model, classifier_tokenizer = load_model_and_tokenizer(
-            model_name=classifier_config['path'],
-            model_kwargs=classifier_config.get('kwargs', {}),
-            device=device
-        )
+        # [!] 修改：分离需要分类的数据 (Safety) 和不需要分类的数据 (Utility)
+        mask_safety = final_results_df['eval_split'] == 'safety'
+        df_to_classify = final_results_df[mask_safety].copy()
 
-        # --- 运行分类 ---
-        labels = run_classification(
-            classifier_model, classifier_tokenizer, final_results_df, classifier_batch_size
-        )
-        final_results_df['label'] = labels
+        # Utility 数据集 (如果存在) 将被跳过，label 保持为 NA
+        df_skip_classify = final_results_df[~mask_safety]
+
+        if not df_to_classify.empty:
+            logger.info(f"正在对 {len(df_to_classify)} 条 Safety 样本进行有害性判断 (跳过 Utility 样本)...")
+
+            # --- 5. 加载分类器 LLM ---
+            logger.info("--- 正在加载分类器 LLM ---")
+            classifier_config = config['classifier_config']
+            classifier_batch_size = config.get('classifier_batch_size', 2)
+            classifier_model, classifier_tokenizer = load_model_and_tokenizer(
+                model_name=classifier_config['path'],
+                model_kwargs=classifier_config.get('kwargs', {}),
+                device=device
+            )
+
+            # --- 运行分类 ---
+            labels = run_classification(
+                classifier_model, classifier_tokenizer, df_to_classify, classifier_batch_size
+            )
+            df_to_classify['label'] = labels
+
+            # 将分类后的结果更新回 final_results_df
+            # 使用索引对齐进行更新
+            final_results_df.update(df_to_classify)
+            logger.info("Safety 样本分类完成。")
+        else:
+            logger.info("没有需要分类的 Safety 样本 (或未启用 Safety 评测)。")
 
     finally:
         # --- 关键步骤: 释放分类器 LLM ---
@@ -738,11 +788,11 @@ def main():
     # --- [!] 修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
     # [!] 现有的 'if run_utility:' 检查不是必需的，
     # 因为如果 run_utility=False, 'utility' 数据集将不存在于 final_results_df 中
-    df_utility_results = final_results_df[final_results_df['dataset'] == 'utility']
+    df_utility_results = final_results_df[final_results_df['eval_split'] == 'utility']
     if not df_utility_results.empty:
         # 从结果中获取所有唯一的良性数据集名称
         utility_dataset_names = df_utility_results['utility_dataset_name'].unique()
-        logger.info(f"正在为 {len(utility_dataset_names)} 个良性数据集计算 FPR 指标...")
+        logger.info(f"正在为 {len(utility_dataset_names)} 个良性数据集生成结果 (跳过 FPR 指标计算)...")
 
         for dataset_name in utility_dataset_names:
             if pd.isna(dataset_name) or dataset_name == 'N/A': continue
@@ -751,37 +801,60 @@ def main():
             df_utility_subset = df_utility_results[df_utility_results['utility_dataset_name'] == dataset_name]
             if df_utility_subset.empty: continue
 
-            # 分别计算 baseline 和 guarded 的指标
-            baseline_fpr_metrics = calculate_metrics(df_utility_subset.query("condition == 'baseline'"), condition='baseline')
-            guarded_fpr_metrics = calculate_metrics(df_utility_subset.query("condition == 'guarded'"), condition='guarded')
-
-            # [!] 为这个特定的数据集创建独立的 summary
-            utility_summary = {
-                f'utility_fpr_{dataset_name}': {
-                    'baseline': baseline_fpr_metrics,
-                    'guarded': guarded_fpr_metrics
-                }
-            }
-            logger.info(f"可用性 (FPR) for {dataset_name} - Baseline: {baseline_fpr_metrics['rate']:.4f}, Guarded: {guarded_fpr_metrics['rate']:.4f}")
+            # [!] 修改：不再计算 FPR，因为 label 缺失或 N/A
+            logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV & Alpaca JSON)...")
 
             # [!] 为这个特定的数据集保存独立的文件
             try:
                 utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
                 df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
 
-                utility_json_path = output_dir / f"{llm_name}_evaluation_summary_utility_{dataset_name}.json"
-                with open(utility_json_path, 'w', encoding='utf-8') as f:
-                    json.dump(utility_summary, f, indent=2, default=str)
+                # 如果确实需要一个空的 summary 文件以防 pipeline 报错，可以生成一个占位符
+                # utility_json_path = output_dir / f"{llm_name}_evaluation_summary_utility_{dataset_name}.json"
+                # with open(utility_json_path, 'w', encoding='utf-8') as f:
+                #     json.dump({"note": "FPR calculation skipped by user request."}, f, indent=2)
 
-                logger.info(f"已保存可用性 (Utility) '{dataset_name}' 结果到: {utility_csv_path.name} 和 {utility_json_path.name}")
+                logger.info(f"已保存可用性 (Utility) '{dataset_name}' 详细 CSV 到: {utility_csv_path.name}")
+
+                # --- [新增] Alpaca Eval 特定格式输出 ---
+                if dataset_name == "alpaca_eval":
+                    logger.info("检测到 alpaca_eval 数据集，正在生成专用的评估 JSON 文件...")
+
+                    def save_alpaca_format(sub_df, out_filename, generator_name):
+                        records = []
+                        for _, row in sub_df.iterrows():
+                            record = {
+                                "dataset": row.get("dataset", "alpaca_eval"),  # 如果原数据有 dataset 字段则使用，否则默认
+                                "instruction": row.get("instruction", row.get("prompt", "")),  # instruction 是 alpaca 的 prompt
+                                "output": row.get("assistant_output", ""),
+                                "generator": generator_name
+                            }
+                            # 尝试保留 input 里的 extra fields 如果需要，但用户只指定了这4个
+                            records.append(record)
+
+                        out_path = output_dir / out_filename
+                        with open(out_path, 'w', encoding='utf-8') as f:
+                            json.dump(records, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Alpaca Eval 格式结果已保存到: {out_path.name}")
+
+                    # 保存 Baseline
+                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
+                    if not df_base.empty:
+                        save_alpaca_format(df_base, f"{llm_name}-alpaca_eval-baseline.json", f"{llm_name}-baseline")
+
+                    # 保存 Guarded (JEDI)
+                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
+                    if not df_guard.empty:
+                        save_alpaca_format(df_guard, f"{llm_name}-alpaca_eval-JEDI.json", f"{llm_name}-JEDI")
+
             except Exception as e:
                 logger.error(f"保存可用性 (Utility) '{dataset_name}' 结果文件时失败: {e}", exc_info=True)
     else:
-        logger.info("未找到可用性结果，跳过 FPR 计算和保存。")
+        logger.info("未找到可用性结果。")
 
     # --- 计算并保存安全性指标 (ASR) ---
     # [!] 现有的 'if run_safety:' 检查不是必需的
-    df_safety_results = final_results_df[final_results_df['dataset'] == 'safety']
+    df_safety_results = final_results_df[final_results_df['eval_split'] == 'safety']
     if not df_safety_results.empty:
         attack_methods = df_safety_results['attack_method'].unique()
         logger.info(f"正在为 {len(attack_methods)} 种攻击方法计算 ASR 指标...")

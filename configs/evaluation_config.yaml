@@ -51,22 +51,22 @@ output_dir: "data/evaluations"
 utility_dataset_config:
   # 应用于所有良性数据集的 *总* 采样大小 (0 表示全部)
   # 脚本将尝试从下面的数据集中等额抽取，直到达到此总数。
-  sample_size: 100
+  sample_size: 10
 
   # 定义一个或多个要加载的良性数据集
   datasets:
-    - name: "benign_behaviors" # 用于保存结果的文件名后缀
-      filename: "benign-behaviors.csv" # 确保在 data_dir 中存在
-      prompt_column: "Goal" # 良性数据集中的提示列名
+#    - name: "benign_behaviors" # 用于保存结果的文件名后缀
+#      filename: "benign-behaviors.csv" # 确保在 data_dir 中存在
+#      prompt_column: "Goal" # 良性数据集中的提示列名
 
 #    - name: "or_bench" # 第二个数据集的示例
 #      filename: "or-bench-80k.csv" # 确保在 data_dir 中存在
 #      prompt_column: "prompt" # 此文件的提示列名
 
     # 您可以在此处添加更多数据集...
-    # - name: "another_set"
-    #   filename: "another.csv"
-    #   prompt_column: "text"
+     - name: "alpaca_eval"
+       filename: "alpaca_eval.json"
+       prompt_column: "instruction"
 
 # 用于评估“安全性”
 safety_dataset_config:
@@ -95,7 +95,7 @@ safety_dataset_config:
 #    - "DEV_MODE_Ranti"
 #    - "new_gptfuzzer"
 #    - "new_deepinception"
-    - "AIM"
+#    - "AIM"
 
 
   # 安全性数据集的采样大小 (0 表示全部)
@@ -104,12 +104,12 @@ safety_dataset_config:
 # --- 4. 评测参数 ---
 # 在评测时要生成的 token 数量
 generation_kwargs:
-  max_new_tokens: 256
+  max_new_tokens: 2048 # alpaca_eval:2048 xstest:512
   do_sample: false
 
 # 评测时使用的批量大小。根据显存（VRAM）进行调整。
-batch_size: 6
+batch_size: 4
 # 分类器模型的批量大小 (通常需要更小)
-classifier_batch_size: 2
+classifier_batch_size: 1
 # 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
 device: "cuda"

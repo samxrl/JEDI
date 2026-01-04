@@ -168,7 +168,7 @@ class SarcLogitsProcessor(LogitsProcessor):
             # 5a. 计算动态 Alphas
             # (A_t / h)  clamped at 1.0 然后取 gamma 次方
             ratios = (A_t_device[active_indices] / self.h).clamp(min=1.0)
-            gamma = 5  # 或 1.5
+            gamma = 1.2  # 或 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_alphas[active_indices] = self.base_alpha * ratios
 
