@@ -7,7 +7,7 @@
 
 [!] 修改：
 - `Guard` 和 `SarcLogitsProcessor` 现已更新，
-  支持基于 CUSUM 分数 `A_t` 的动态干预强度 `alpha'`。
+  支持基于 CUSUM 分数 `A_t` 的动态干预强度 `beta'`。
 - `SarcLogitsProcessor` 现在处理 `A_t` 的计算和状态跟踪。
 - `CusumState` 不再自动重置。
 
@@ -21,7 +21,7 @@
     a. 从 `HookManager` 获取当前 token 的隐藏状态 (由读钩子捕获)。
     b. 调用 `Scorer` 计算单步风险分数 r_t (阶段 4.1, 5.3)。
     c. [!] 将 r_t 送入 `CusumState`，取回当前的累积分数 A_t (阶段 5.4)。
-    d. [!] 如果 `A_t > h`，则激活干预，并计算动态 `alpha'` (阶段 5.5)。
+    d. [!] 如果 `A_t > h`，则激活干预，并计算动态 `beta'` (阶段 5.5)。
 5.  通过 `HookManager` 动态注册一个“写钩子”，
     该钩子执行 `interventions.py` 中定义的 ActAdd 注入 (阶段 6.1)。
 6.  在 `with` 块结束时，自动 `detach`，清理所有钩子并恢复
@@ -51,7 +51,7 @@ class SarcLogitsProcessor(LogitsProcessor):
     JEDI 防御的核心逻辑处理器。
     在 `generate` 循环的每个 token 生成步骤中被调用。
 
-    [!] 修改：实现动态 alpha 计算和干预状态管理。
+    [!] 修改：实现动态 beta 计算和干预状态管理。
     """
 
     def __init__(self, guard_instance, batch_size: int, trigger_logs: List[int]):
@@ -85,16 +85,16 @@ class SarcLogitsProcessor(LogitsProcessor):
             device=self.device
         )
 
-        # --- [!] 新增：动态 Alpha 和状态管理 ---
+        # --- [!] 新增：动态 Beta 和状态管理 ---
         # 跟踪哪些序列已经触发了干预
         self.intervention_active = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         # 从 Guard 获取 CUSUM 阈值
         self.h = self.guard.h
         # 从 Guard 获取基础干预强度
-        self.base_alpha = self.guard.base_alpha
+        self.base_beta = self.guard.base_beta
         # 初始化一个张量来存储每个序列的 *当前* 干预强度
-        self.dynamic_alphas = torch.full(
-            (batch_size,), self.base_alpha, device=self.device, dtype=torch.float32
+        self.dynamic_betas = torch.full(
+            (batch_size,), self.base_beta, device=self.device, dtype=torch.float32
         )
         # --- 结束新增 ---
 
@@ -161,29 +161,29 @@ class SarcLogitsProcessor(LogitsProcessor):
                 logger.debug(f"JEDI: CUSUM 在第 {self.current_step} 步 *首次* 触发。激活以下序列: "
                              f"{newly_triggered.nonzero(as_tuple=True)[0].tolist()}")
 
-        # 5. [!] 如果 *任何* 序列（新的或旧的）处于激活状态，则计算 alpha' 并设置钩子
+        # 5. [!] 如果 *任何* 序列（新的或旧的）处于激活状态，则计算 beta' 并设置钩子
         if torch.any(self.intervention_active):
             active_indices = self.intervention_active
 
-            # 5a. 计算动态 Alphas
+            # 5a. 计算动态 Betas
             # (A_t / h)  clamped at 1.0 然后取 gamma 次方
             ratios = (A_t_device[active_indices] / self.h).clamp(min=1.0)
             gamma = 1.2  # 或 1.5
             ratios = ratios.pow(gamma)
-            self.dynamic_alphas[active_indices] = self.base_alpha * ratios
+            self.dynamic_betas[active_indices] = self.base_beta * ratios
 
             if logger.isEnabledFor(logging.DEBUG):
                 if torch.any(newly_triggered):  # 只在首次触发时记录
                     active_idxs_list = active_indices.nonzero(as_tuple=True)[0].tolist()
-                    alphas_list = self.dynamic_alphas[active_indices].tolist()
-                    logger.debug(f"  > Alphas: { {idx: alpha for idx, alpha in zip(active_idxs_list, alphas_list)} }")
+                    betas_list = self.dynamic_betas[active_indices].tolist()
+                    logger.debug(f"  > Betas: { {idx: beta for idx, beta in zip(active_idxs_list, betas_list)} }")
 
             # 5b. 告诉 HookManager 在 *下一次* forward 传递时
             #     应用干预钩子
             self.guard.hook_manager.set_intervention_state(
                 self.guard.intervention_func,  # 干预函数
                 self.intervention_active,  # (B,) bool, 哪些序列要干预
-                self.dynamic_alphas  # (B,) float, 所有序列的 alpha 值
+                self.dynamic_betas  # (B,) float, 所有序列的 beta 值
             )
 
         # 6. 递增生成步骤计数器
@@ -205,7 +205,7 @@ class Guard:
             mu_hat: float,
             kappa: float,
             h: float,
-            base_alpha: float,  # [!] 新增：基础 alpha
+            base_beta: float,  # [!] 新增：基础 beta
             scorer: Scorer,
             intervention_func: Callable,
             device: str = 'cpu'
@@ -224,7 +224,7 @@ class Guard:
         self.h = h
 
         # [!] 干预参数
-        self.base_alpha = base_alpha
+        self.base_beta = base_beta
 
         # 核心组件
         self.scorer = scorer
@@ -240,7 +240,7 @@ class Guard:
         # --- 结束新增 ---
 
         logger.info(f"Guard 实例已初始化。将在第 {layer_id} 层运行。")
-        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}, base_alpha={base_alpha:.2f}")
+        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}, base_beta={base_beta:.2f}")
 
     @classmethod
     def from_artifacts(cls, artifact_path: str, device: Optional[str] = None) -> "Guard":
@@ -292,17 +292,17 @@ class Guard:
         transform_early = artifacts['transforms']['early_window'][layer_id]
         intervention_vector = artifacts['intervention_vectors'][layer_id]
 
-        # [!] 从 defense_params.yaml 加载 *基础* alpha
-        base_alpha = params.get('alpha', 2.0)  # 尝试键 'alpha'
-        if 'intervention_alpha' in params:  # 备用键
-            base_alpha = params.get('intervention_alpha', 10.0)
+        # [!] 从 defense_params.yaml 加载 *基础* beta（兼容旧键 alpha）
+        base_beta = params.get('beta', params.get('alpha', 2.0))  # 尝试键 'beta'，否则回退
+        if 'intervention_beta' in params:  # 备用键
+            base_beta = params.get('intervention_beta', base_beta)
 
-        logger.info(f"使用基础干预强度 (base_alpha): {base_alpha}")
+        logger.info(f"使用基础干预强度 (base_beta): {base_beta}")
 
-        # [!] 创建干预函数时不再传入 alpha
+        # [!] 创建干预函数时不再传入 beta
         intervention_func = create_intervention_hook_func(
             vector=intervention_vector,
-            # alpha=base_alpha, <-- [!] 移除
+            # beta=base_beta, <-- [!] 移除
             transform=transform_early,  # 传入 early_window 变换
             device=device
         )
@@ -314,7 +314,7 @@ class Guard:
             mu_hat=mu_hat,
             kappa=kappa,
             h=h,
-            base_alpha=base_alpha,  # [!] 传入基础 alpha
+            base_beta=base_beta,  # [!] 传入基础 beta
             scorer=scorer,
             intervention_func=intervention_func,
             device=device

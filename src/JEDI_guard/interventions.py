@@ -4,16 +4,16 @@
 
 [!] 此文件已修改，以修复“空间不匹配”问题。
 [!] 再次修改：
-- 移除 `alpha` 参数，使其支持动态强度。
-- `hook_func` 现在接受 `dynamic_alphas` 张量。
+- 移除固定强度参数，使其支持动态 beta 强度。
+- `hook_func` 现在接受 `dynamic_betas` 张量。
 
 核心功能是 `create_intervention_hook_func`，它创建了一个
 PyTorch 钩子函数。
 
 当 CUSUM 警报触发时，此钩子将执行一个完整的“变换-干预-反转” (h -> z -> z' -> h') 流程:
 1.  (h_t -> z_t): 将原始隐藏状态 h_t 变换到白化空间 z_t。
-2.  (z_t -> z'_t): 在白化空间中应用 ActAdd: z'_t = z_t + (alpha' * v_l)。
-   [!] `alpha'` 是在运行时动态传入的。
+2.  (z_t -> z'_t): 在白化空间中应用 ActAdd: z'_t = z_t + (beta' * v_l)。
+   [!] `beta'` 是在运行时动态传入的。
 3.  (z'_t -> h'_t): 将干预后的 z'_t 反向变换回原始空间 h'_t。
 """
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def create_intervention_hook_func(
         vector: torch.Tensor,
-        # [!] 移除 alpha: float,
+        # [!] 不再需要固定 beta: float,
         transform: Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]],  # [!] 接收 (W, mu, W_inv)
         device: str
 ) -> Callable:
@@ -67,7 +67,7 @@ def create_intervention_hook_func(
     def hook_func(
             hidden_state: torch.Tensor,  # 接收来自 pre-hook (args[0]) 的 hidden_state
             indices: torch.Tensor,  # 接收来自 hook_manager 的 indices (B,)
-            dynamic_alphas: torch.Tensor  # [!] 接收动态 alpha (B,)
+            dynamic_betas: torch.Tensor  # [!] 接收动态 beta (B,)
     ) -> torch.Tensor:  # 返回修改后的 hidden_state
         """
         实际的 PyTorch 钩子实现 (适配 pre-hook)。
@@ -78,7 +78,7 @@ def create_intervention_hook_func(
                 模块的输入 hidden_state (B, SeqLen, D)。
             indices (torch.Tensor):
                 一个布尔张量 (B,)，指示哪些批量索引需要被干预。
-            dynamic_alphas (torch.Tensor):
+            dynamic_betas (torch.Tensor):
                 一个浮点张量 (B,)，包含 *所有* 序列的当前干预强度。
 
         Returns:
@@ -98,18 +98,18 @@ def create_intervention_hook_func(
 
             # 2. (z_t -> z'_t) [!] 在白化空间中应用 *动态* 干预
 
-            # 2a. 获取需要干预的序列对应的 alphas
+            # 2a. 获取需要干预的序列对应的 betas
             # (B,)[indices] -> (N_indices,)
-            alphas_for_active = dynamic_alphas[indices].to(hidden_state.dtype)
+            betas_for_active = dynamic_betas[indices].to(hidden_state.dtype)
 
             # 2b. 准备广播
             # (N_indices,) -> (N_indices, 1, 1)
-            alphas_for_broadcast = alphas_for_active.unsqueeze(-1).unsqueeze(-1)
+            betas_for_broadcast = betas_for_active.unsqueeze(-1).unsqueeze(-1)
             # (D,) -> (1, 1, D)
             vector_for_broadcast = vector_gpu.to(hidden_state.dtype).unsqueeze(0).unsqueeze(0)
 
             # 2c. 计算最终的加法向量 (N_indices, 1, D)
-            additive_vectors = alphas_for_broadcast * vector_for_broadcast
+            additive_vectors = betas_for_broadcast * vector_for_broadcast
 
             # 2d. 应用干预
             z_prime_t = z_t + additive_vectors
