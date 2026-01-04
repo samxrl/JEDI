@@ -294,8 +294,8 @@ class Guard:
         transform_early = artifacts['transforms']['early_window'][layer_id]
         intervention_vector = artifacts['intervention_vectors'][layer_id]
 
-        # [!] 从 defense_params.yaml 加载 *基础* beta（兼容旧键 alpha）
-        base_beta = params.get('beta', params.get('alpha', 2.0))  # 尝试键 'beta'，否则回退
+        # [!] 从 defense_params.yaml 加载 *基础* beta
+        base_beta = params.get('beta', 2.0)  # 尝试键 'beta'
         if 'intervention_beta' in params:  # 备用键
             base_beta = params.get('intervention_beta', base_beta)
 
