@@ -13,6 +13,8 @@ data/processed/*
 data/activations/*
 data/evaluations/*
 
+Kernel Density Simulation Visualization.py
+
 # Artifacts
 artifacts/*
 
