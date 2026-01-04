@@ -36,13 +36,13 @@ calibration_params:
   delay_weight: 0.1
 
   # --- CUSUM 参数扫描网格 ---
-  # 定义了用于寻找最优 h (报警阈值) 和 k (容忍带) 的搜索空间。
+  # 定义了用于寻找最优 alpha (报警阈值) 和 k (容忍带) 的搜索空间。
   # 网格越精细，搜索时间越长，但结果可能更优。
 
-  # h (报警阈值) 的范围和步长
-  h_min: 0
-  h_max: 60
-  h_step: 1
+  # alpha (报警阈值) 的范围和步长
+  alpha_min: 0
+  alpha_max: 60
+  alpha_step: 1
   # k (容忍带) 的范围和步长
   k_min: 0
   k_max: 60

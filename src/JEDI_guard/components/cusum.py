@@ -27,10 +27,10 @@ class CusumState:
     M_t = min(M_{t-1}, S_t)
     A_t = S_t - M_t
 
-    当 A_t > h 时，触发警报。
+    当 A_t > alpha 时，触发警报。
     """
 
-    def __init__(self, mu_hat: float, kappa: float, h: float, batch_size: int, device: str = 'cpu'):
+    def __init__(self, mu_hat: float, kappa: float, alpha: float, batch_size: int, device: str = 'cpu'):
         """
         初始化一批样本的 CUSUM 状态。
 
@@ -43,7 +43,7 @@ class CusumState:
                 容忍带。用于抵消 `r_t` 的正常波动，防止因随机噪声导致的误报。
                 只有当 `r_t` 持续高于 `mu_hat + kappa` 时，累积量才会显著增加。
 
-            h (float):
+            alpha (float):
                 报警阈值。当 CUSUM 统计量 `A_t` 超过此值时，表明检测到了显著的
                 有害倾向漂移，应触发干预。
 
@@ -55,7 +55,7 @@ class CusumState:
         """
         self.mu_hat = mu_hat
         self.kappa = kappa
-        self.h = h
+        self.alpha = alpha
         self.batch_size = batch_size
         self.device = device
 
@@ -113,7 +113,7 @@ class CusumState:
         A_t = self.S - self.M
 
         # 4. [!] 移除重置逻辑
-        # triggered_indices = A_t > self.h
+        # triggered_indices = A_t > self.alpha
         # if torch.any(triggered_indices):
         #     self.reset(triggered_indices)
 

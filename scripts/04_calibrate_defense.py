@@ -18,14 +18,14 @@
 3.  **校准分数阈值 (theta)**:
     - 对于最优层，使用其在 B1 (良性) 数据集上的分数分布，计算指定分位数 (如 95%) 作为分数阈值 `theta`。
     - 使用 ReLU 函数将原始分数 `s_t` 转换为非负的风险分数 `r_t = max(0, s_t - theta)`。
-4.  **校准 CUSUM 参数 (kappa, h)**:
-    - 在 `(kappa, h)` 参数网格上进行搜索。
+4.  **校准 CUSUM 参数 (kappa, alpha)**:
+    - 在 `(kappa, alpha)` 参数网格上进行搜索。
     - 对每个参数对，在 B1 和 A1 数据集上模拟 CUSUM 过程，计算误报率 (FPR) 和平均检测延迟。
-    - 找到在满足目标误报率约束下，具有最低检测延迟的最佳 `(kappa, h)` 对。
+    - 找到在满足目标误报率约束下，具有最低检测延迟的最佳 `(kappa, alpha)` 对。
     - **[!] 优化**: 使用多进程并行处理网格搜索，加快校准速度。
     - **[!] 修复**: 将数据转换为 Numpy 格式传递给子进程，解决 "Too many open files" 错误。
 5.  **保存防御参数**:
-    - 将所有校准得到的参数 (最优层、theta、kappa、h、以及对应的向量和变换) 保存到一个文件中，
+    - 将所有校准得到的参数 (最优层、theta、kappa、alpha、以及对应的向量和变换) 保存到一个文件中，
       以供在线防御系统使用。
     - [!] 新增: 将网格搜索的详细结果保存为 CSV 表格。
 
@@ -135,7 +135,7 @@ def find_best_layer(harmful_scores_by_layer, benign_scores_by_layer, layers):
     return int(best_layer['layer']), results_df
 
 
-def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
+def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, alpha):
     """
     模拟 CUSUM 过程以计算触发率和延迟。
 
@@ -164,7 +164,7 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
         for t, r_t in enumerate(r):
             # r_t 此时是 numpy scalar，直接运算即可
             A = max(0, A + r_t - benign_r_mean - kappa)
-            if A > h:
+            if A > alpha:
                 triggers += 1
                 total_delay += (t + 1)
                 break
@@ -177,18 +177,18 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, h):
 
 def _evaluate_single_grid_point(params, benign_sequences, harmful_sequences, theta, benign_r_mean):
     """
-    辅助函数：计算单个网格点 (kappa, h) 的 FPR 和 TPR。
+    辅助函数：计算单个网格点 (kappa, alpha) 的 FPR 和 TPR。
     必须位于顶层以便多进程 pickle。
     """
-    kappa, h = params
+    kappa, alpha = params
     # 这里的 sequences 已经是 Numpy 数组列表（在 calibrate_cusum 中转换的）
-    fpr, _ = simulate_cusum(benign_sequences, theta, benign_r_mean, kappa, h)
-    tpr, delay = simulate_cusum(harmful_sequences, theta, benign_r_mean, kappa, h)
-    return {'kappa': kappa, 'h': h, 'fpr': fpr, 'tpr': tpr, 'delay': delay}
+    fpr, _ = simulate_cusum(benign_sequences, theta, benign_r_mean, kappa, alpha)
+    tpr, delay = simulate_cusum(harmful_sequences, theta, benign_r_mean, kappa, alpha)
+    return {'kappa': kappa, 'alpha': alpha, 'fpr': fpr, 'tpr': tpr, 'delay': delay}
 
 
 def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
-    """通过网格搜索校准 CUSUM 的 kappa 和 h 参数 (使用多进程)。"""
+    """通过网格搜索校准 CUSUM 的 kappa 和 alpha 参数 (使用多进程)。"""
     logging.info(f"使用 theta={theta:.4f} 开始 CUSUM 参数网格搜索...")
 
     # 计算良性均值 (此处仍可能处理 Tensor 列表，保持原有逻辑即可)
@@ -206,9 +206,9 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
 
     # 生成参数网格
     kappas = np.arange(grid_config['k_min'], grid_config['k_max'] + grid_config['k_step'], grid_config['k_step'])
-    hs = np.arange(grid_config['h_min'], grid_config['h_max'] + grid_config['h_step'], grid_config['h_step'])
+    alphas = np.arange(grid_config['alpha_min'], grid_config['alpha_max'] + grid_config['alpha_step'], grid_config['alpha_step'])
 
-    param_grid = [(k, h) for k in kappas for h in hs]
+    param_grid = [(k, alpha) for k in kappas for alpha in alphas]
 
     # 获取配置的进程数，默认为 4
     num_processes = grid_config.get('num_processes', 4)
@@ -224,7 +224,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
     benign_sequences_np = [s.numpy() if isinstance(s, torch.Tensor) else s for s in benign_sequences]
     harmful_sequences_np = [s.numpy() if isinstance(s, torch.Tensor) else s for s in harmful_sequences]
 
-    # 使用 partial 固定数据参数，只变化 param_grid 中的 (kappa, h)
+    # 使用 partial 固定数据参数，只变化 param_grid 中的 (kappa, alpha)
     worker_func = functools.partial(
         _evaluate_single_grid_point,
         benign_sequences=benign_sequences_np,  # 传入 Numpy 数据
@@ -265,7 +265,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
     logging.info("CUSUM 网格搜索结果摘要:\n" + results_df.to_string(max_rows=20))
     logging.info(
         f"*** 最佳 CUSUM 参数 (FPR <= {grid_config['target_fpr']}): "
-        f"kappa={best_params['kappa']:.4f}, h={best_params['h']:.4f} "
+        f"kappa={best_params['kappa']:.4f}, alpha={best_params['alpha']:.4f} "
         f"-> (FPR={best_params['fpr']:.4f}, TPR={best_params['tpr']:.4f}, Delay={best_params['delay']:.2f}) ***"
     )
 
@@ -341,7 +341,7 @@ def main():
         'theta': float(theta),
         'mu_hat': float(benign_r_mean),
         'kappa': best_cusum_params['kappa'],
-        'h': best_cusum_params['h'],
+        'alpha': best_cusum_params['alpha'],
     }
 
     # --- 8. 保存结果 ---

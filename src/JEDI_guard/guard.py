@@ -21,7 +21,7 @@
     a. 从 `HookManager` 获取当前 token 的隐藏状态 (由读钩子捕获)。
     b. 调用 `Scorer` 计算单步风险分数 r_t (阶段 4.1, 5.3)。
     c. [!] 将 r_t 送入 `CusumState`，取回当前的累积分数 A_t (阶段 5.4)。
-    d. [!] 如果 `A_t > h`，则激活干预，并计算动态 `beta'` (阶段 5.5)。
+    d. [!] 如果 `A_t > alpha`，则激活干预，并计算动态 `beta'` (阶段 5.5)。
 5.  通过 `HookManager` 动态注册一个“写钩子”，
     该钩子执行 `interventions.py` 中定义的 ActAdd 注入 (阶段 6.1)。
 6.  在 `with` 块结束时，自动 `detach`，清理所有钩子并恢复
@@ -80,7 +80,7 @@ class SarcLogitsProcessor(LogitsProcessor):
         self.cusum = CusumState(
             mu_hat=self.guard.mu_hat,
             kappa=self.guard.kappa,
-            h=self.guard.h,
+            alpha=self.guard.alpha,
             batch_size=batch_size,
             device=self.device
         )
@@ -89,7 +89,7 @@ class SarcLogitsProcessor(LogitsProcessor):
         # 跟踪哪些序列已经触发了干预
         self.intervention_active = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         # 从 Guard 获取 CUSUM 阈值
-        self.h = self.guard.h
+        self.alpha = self.guard.alpha
         # 从 Guard 获取基础干预强度
         self.base_beta = self.guard.base_beta
         # 初始化一个张量来存储每个序列的 *当前* 干预强度
@@ -142,7 +142,7 @@ class SarcLogitsProcessor(LogitsProcessor):
         # 4. [!] 检查触发器并更新干预状态
 
         # 4a. 确定哪些序列 *当前* 应该被触发
-        currently_triggered = A_t_device > self.h
+        currently_triggered = A_t_device > self.alpha
 
         # 4b. 确定哪些是 *新* 触发的
         newly_triggered = currently_triggered & (~self.intervention_active)
@@ -166,8 +166,8 @@ class SarcLogitsProcessor(LogitsProcessor):
             active_indices = self.intervention_active
 
             # 5a. 计算动态 Betas
-            # (A_t / h)  clamped at 1.0 然后取 gamma 次方
-            ratios = (A_t_device[active_indices] / self.h).clamp(min=1.0)
+            # (A_t / alpha)  clamped at 1.0 然后取 gamma 次方
+            ratios = (A_t_device[active_indices] / self.alpha).clamp(min=1.0)
             gamma = 1.2  # 或 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_betas[active_indices] = self.base_beta * ratios
@@ -204,7 +204,7 @@ class Guard:
             theta: float,
             mu_hat: float,
             kappa: float,
-            h: float,
+            alpha: float,
             base_beta: float,  # [!] 新增：基础 beta
             scorer: Scorer,
             intervention_func: Callable,
@@ -221,7 +221,7 @@ class Guard:
         # CUSUM 参数
         self.mu_hat = mu_hat
         self.kappa = kappa
-        self.h = h
+        self.alpha = alpha
 
         # [!] 干预参数
         self.base_beta = base_beta
@@ -240,7 +240,7 @@ class Guard:
         # --- 结束新增 ---
 
         logger.info(f"Guard 实例已初始化。将在第 {layer_id} 层运行。")
-        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, h={h:.4f}, base_beta={base_beta:.2f}")
+        logger.info(f"防御参数: theta={theta:.4f}, mu_hat={mu_hat:.4f}, kappa={kappa:.4f}, alpha={alpha:.4f}, base_beta={base_beta:.2f}")
 
     @classmethod
     def from_artifacts(cls, artifact_path: str, device: Optional[str] = None) -> "Guard":
@@ -276,7 +276,9 @@ class Guard:
         theta = params['theta']
         mu_hat = params['mu_hat']
         kappa = params['kappa']
-        h = params['h']
+        alpha = params.get('alpha', params.get('h'))
+        if alpha is None:
+            raise KeyError("defense_params.yaml 中缺少 CUSUM 报警阈值 (alpha)。")
 
         # 3. 准备 Scorer (阶段 4.1)
         transform_cont = artifacts['transforms']['content_window'][layer_id]
@@ -313,7 +315,7 @@ class Guard:
             theta=theta,
             mu_hat=mu_hat,
             kappa=kappa,
-            h=h,
+            alpha=alpha,
             base_beta=base_beta,  # [!] 传入基础 beta
             scorer=scorer,
             intervention_func=intervention_func,
