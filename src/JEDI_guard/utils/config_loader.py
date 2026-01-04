@@ -6,7 +6,7 @@
 用于从指定的目录中加载所有 JEDI 防御所需的离线产物。
 
 根据 `PROJECT_STRUCTURE.md` 和 `03/04` 号脚本，这些产物包括：
-- `defense_params.yaml`: 包含校准后的参数 (theta, mu_hat, kappa, h, best_layer)。
+- `defense_params.yaml`: 包含校准后的参数 (theta, mu_hat, kappa, alpha, best_layer)。
 - `transforms.pt`: 包含用于“早期窗口”和“内容窗口”的白化/中心化变换。
 - `condition_vectors.pt`: 包含所有层的条件向量 (c_l)，用于检测。
 - `intervention_vectors.pt`: 包含所有层的干预向量 (v_l)，用于转向。
