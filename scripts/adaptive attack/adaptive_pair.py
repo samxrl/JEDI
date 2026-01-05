@@ -601,7 +601,7 @@ def parse_args() -> argparse.Namespace:
         help="包含 Goal 与 Target 列的 csv 文件",
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--max_rounds", type=int, default=20, help="最大攻击轮数（R）")
+    parser.add_argument("--max_rounds", type=int, default=5, help="最大攻击轮数（R）")
     parser.add_argument(
         "--candidates_per_round",
         type=int,
@@ -611,7 +611,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--query_budget",
         type=int,
-        default=200,
+        default=50,
         help="单条样本的查询预算（完整生成调用次数）",
     )
     parser.add_argument(
