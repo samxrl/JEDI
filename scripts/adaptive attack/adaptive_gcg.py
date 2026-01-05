@@ -221,6 +221,9 @@ class AdaptiveGCG:
             temperature=0.0,
         )
 
+        # 记录上一轮生成的 A_max_ratio，用于自适应正则
+        self.latest_A_max_ratio: float = 0.0
+
     def _decode_suffix(self, suffix_ids: List[int]) -> str:
         return self.tokenizer.decode(suffix_ids, skip_special_tokens=True)
 
@@ -235,6 +238,7 @@ class AdaptiveGCG:
             suffix_ids: List[int],
             target_ids: List[int],
             require_grad: bool = True,
+            a_max_ratio: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """
         计算 attack loss，并返回梯度所需的相关张量。
@@ -252,7 +256,12 @@ class AdaptiveGCG:
             inputs_embeds.retain_grad()
 
         outputs = self.model(inputs_embeds=inputs_embeds, labels=labels)
-        loss = outputs.loss
+        attack_loss = outputs.loss
+
+        # 自适应攻击：在 GCG loss 中加入 A_max_ratio 的惩罚项
+        ratio = self.latest_A_max_ratio if a_max_ratio is None else a_max_ratio
+        penalty = torch.tensor(max(0.0, ratio - 1.0), device=self.device, dtype=attack_loss.dtype)
+        loss = attack_loss + penalty
         return loss, inputs_embeds, input_ids, len(prompt_ids)
 
     def _hotflip_candidates(
@@ -397,6 +406,8 @@ class AdaptiveGCG:
 
             # 3) 真正 query：带 Guard 生成
             output_text, feedback, _ = self._eval_with_guard(prompt, suffix_ids)
+            self.latest_A_max_ratio = feedback.A_max_ratio
+
             success, refusal = self._check_success(output_text, target)
             score = compute_score(success, feedback, feedback.output_len)
 
