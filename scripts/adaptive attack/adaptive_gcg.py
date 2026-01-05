@@ -386,7 +386,7 @@ class AdaptiveGCG:
         target_ids = self.tokenizer(target, add_special_tokens=False).input_ids
         suffix_ids = self._init_suffix()
 
-        # [!] 修改：同步 suffix_length 以匹配硬编码字符串的 token 长度
+        # 同步 suffix_length 以匹配硬编码字符串的 token 长度
         # 这是一个重要的修复，因为 hotflip 梯度切片依赖于 self.suffix_length
         if len(suffix_ids) != self.suffix_length:
             logger.info("[%s] 调整 suffix_length: %d -> %d (基于硬编码初始值)", sample_id, self.suffix_length, len(suffix_ids))
@@ -435,7 +435,7 @@ class AdaptiveGCG:
 
             success, refusal = self._check_success(output_text, target)
 
-            # [修改] 调用 compute_score 时传入 self.adaptive 标志
+            # 调用 compute_score 时传入 self.adaptive 标志
             score = compute_score(success, feedback, feedback.output_len, adaptive=self.adaptive)
 
             query_logs.append(
@@ -465,7 +465,7 @@ class AdaptiveGCG:
             else:
                 no_improve_steps += 1
 
-            # [修改] 早停条件区分自适应和非自适应模式
+            # 早停条件区分自适应和非自适应模式
             if self.adaptive:
                 # 自适应模式：不仅要成功，还要规避检测（not alarm）
                 if success and not feedback.alarm:
@@ -543,7 +543,7 @@ def parse_args() -> argparse.Namespace:
         default="../../data/raw/jbb_expanded.csv",
         help="包含 Goal 与 Target 列的 csv 文件",
     )
-    # [修改] 移除了 --output_dir 参数，输出路径现在根据 model_name 自动生成
+    # 移除了 --output_dir 参数，输出路径现在根据 model_name 自动生成
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max_steps", type=int, default=200, help="最大优化步数 (<=Q)")
     parser.add_argument("--suffix_length", type=int, default=38, help="suffix token 长度")
@@ -605,7 +605,7 @@ def main():
 
     prompts = load_prompts(Path(args.input_prompts))
 
-    # [修改] 用于收集最终结果的列表
+    # 用于收集最终结果的列表
     final_results = []
 
     for sample_id, goal, target in tqdm(prompts):
@@ -622,12 +622,11 @@ def main():
             "prompt": final_prompt  # 带后缀的提示
         })
 
-    # [修改] 保存结果为 CSV
     # 路径规则: data/evaluations/<model name>
     output_dir = Path(f"data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # [修改] 根据模式动态生成文件名
+    # 根据模式动态生成文件名
     if adaptive_mode:
         csv_filename = "adaptive_gcg_prompts.csv"
     else:
