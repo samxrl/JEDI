@@ -5,22 +5,15 @@
 该脚本实现了用户给定的“自适应攻击实验设计”中 GCG 攻击的可复现版本，
 包含统一的日志字段、评分函数与停止条件，并在 GCG 优化目标中显式加入
 JEDI 风险正则（mean_r 与 A_max_ratio 惩罚）。
-
-主要特性：
-- 支持多样本批量运行，默认攻击预算 N<=200，与 Q=200 的 query 预算对齐。
-- 每步只对 1 个更新后的 suffix 进行一次完整生成评估（计入 query）。
-- 采用自定义的 LoggingSarcLogitsProcessor 替换 Guard 原处理器，
-  直接从 JEDI 在线检测中提取 r_t 与 A_t，计算 alarm、t_alarm 等反馈。
-- 评分函数与成功判定严格遵循实验协议。
-- [修改] 结果保存为 CSV 格式，路径固定为 data/evaluations/<model name>。
-- [修改] 初始后缀被硬编码为特定字符串 "x x x ..."。
 """
+
 import argparse
 import csv
 import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+from tqdm import tqdm
 
 import os
 import sys
@@ -506,7 +499,7 @@ def parse_args() -> argparse.Namespace:
     # [修改] 移除了 --output_dir 参数，输出路径现在根据 model_name 自动生成
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max_steps", type=int, default=200, help="最大优化步数 (<=Q)")
-    parser.add_argument("--suffix_length", type=int, default=20, help="suffix token 长度")
+    parser.add_argument("--suffix_length", type=int, default=38, help="suffix token 长度")
     parser.add_argument("--top_k", type=int, default=32, help="每步候选 token 数")
     parser.add_argument("--patience", type=int, default=30, help="无提升早停步数")
     return parser.parse_args()
@@ -514,6 +507,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.getLogger("JEDI_guard").setLevel(logging.WARNING)
     args = parse_args()
 
     device = args.device
@@ -553,7 +547,7 @@ def main():
     # [修改] 用于收集最终结果的列表
     final_results = []
 
-    for sample_id, goal, target in prompts:
+    for sample_id, goal, target in tqdm(prompts):
         # attack_single 现在返回 (logs, best_output, best_suffix)
         logs, best_output, best_suffix = attacker.attack_single(sample_id, goal, target)
 
