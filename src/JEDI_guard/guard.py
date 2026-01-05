@@ -6,9 +6,9 @@
 封装了所有在线防御逻辑，实现了“方法流程.md”中的阶段 5 和 6。
 
 [!] 修改：
-- `Guard` 和 `SarcLogitsProcessor` 现已更新，
+- `Guard` 和 `JEDILogitsProcessor` 现已更新，
   支持基于 CUSUM 分数 `A_t` 的动态干预强度 `beta'`。
-- `SarcLogitsProcessor` 现在处理 `A_t` 的计算和状态跟踪。
+- `JEDILogitsProcessor` 现在处理 `A_t` 的计算和状态跟踪。
 - `CusumState` 不再自动重置。
 
 核心职责:
@@ -16,7 +16,7 @@
 2.  通过 `attach(model)` 方法，使用 'with' 上下文管理器将自身附加到
     Hugging Face 模型上。
 3.  在 `attach` 期间，通过修补 (patch) 模型的 `generate` 方法来拦截生成流程。
-4.  注入一个自定义的 `LogitsProcessor` (SarcLogitsProcessor)，
+4.  注入一个自定义的 `LogitsProcessor` (JEDILogitsProcessor)，
     该处理器在每个生成步骤执行以下操作：
     a. 从 `HookManager` 获取当前 token 的隐藏状态 (由读钩子捕获)。
     b. 调用 `Scorer` 计算单步风险分数 r_t (阶段 4.1, 5.3)。
@@ -46,7 +46,7 @@ from .utils.config_loader import load_defense_artifacts
 logger = logging.getLogger(__name__)
 
 
-class SarcLogitsProcessor(LogitsProcessor):
+class JEDILogitsProcessor(LogitsProcessor):
     """
     JEDI 防御的核心逻辑处理器。
     在 `generate` 循环的每个 token 生成步骤中被调用。
@@ -235,7 +235,7 @@ class Guard:
         self.hook_manager: Optional[HookManager] = None
         self.original_generate: Optional[Callable] = None
 
-        # --- 新增：用于在 Guard 和 SarcLogitsProcessor 之间传递日志列表 ---
+        # --- 新增：用于在 Guard 和 JEDILogitsProcessor 之间传递日志列表 ---
         self.current_batch_trigger_logs: Optional[List[int]] = None
         # --- 结束新增 ---
 
@@ -326,7 +326,7 @@ class Guard:
     def set_batch_log_target(self, log_list: List[int]):
         """
         在 `_guarded_generate` 之前，从外部 (run_evaluation.py) 设置一个列表
-        用于 SarcLogitsProcessor 记录触发步骤。
+        用于 JEDILogitsProcessor 记录触发步骤。
         """
         self.current_batch_trigger_logs = log_list
 
@@ -368,7 +368,7 @@ class Guard:
             model.generate = self._guarded_generate
 
             # 3. 附加读钩子，用于捕获隐藏状态
-            #    (干预钩子将在 SarcLogitsProcessor 触发时动态附加)
+            #    (干预钩子将在 JEDILogitsProcessor 触发时动态附加)
             self.hook_manager.attach_read_hook()
 
             logger.info(f"Guard 已附加到模型 {model.config.name_or_path} (层: {self.layer_id})。")
@@ -441,7 +441,7 @@ class Guard:
             # 同样使用 dummy 列表
             trigger_logs = [-1] * batch_size
 
-        sarc_processor = SarcLogitsProcessor(
+        JEDI_processor = JEDILogitsProcessor(
             guard_instance=self,
             batch_size=batch_size,
             trigger_logs=trigger_logs  # 传入共享列表
@@ -455,7 +455,7 @@ class Guard:
         elif not isinstance(processor_list, LogitsProcessorList):
             processor_list = LogitsProcessorList([processor_list])  # 确保是列表
 
-        processor_list.append(sarc_processor)
+        processor_list.append(JEDI_processor)
         kwargs['logits_processor'] = processor_list
 
         # 5. 调用原始的 `generate` 方法

@@ -9,7 +9,7 @@ HookManager (钩子管理器)
 - `_write_hook` 将 `dynamic_betas` 传递给干预函数。
 
 核心职责:
-1.  充当模型 (`model`) 和 JEDI 处理器 (`SarcLogitsProcessor`) 之间的桥梁。
+1.  充当模型 (`model`) 和 JEDI 处理器 (`JEDILogitsProcessor`) 之间的桥梁。
 2.  提供 `attach_read_hook` 方法，在目标层注册一个 PyTorch
     `register_forward_hook`，用于“读取”隐藏状态。
 3.  提供 `set_intervention_state` 方法，允许 JEDI 处理器
@@ -206,7 +206,7 @@ class HookManager:
 
     def set_intervention_state(self, func: Callable, indices: torch.Tensor, dynamic_betas: torch.Tensor):
         """
-        由 SarcLogitsProcessor 调用，用于请求在下一个步骤激活干预。
+        由 JEDILogitsProcessor 调用，用于请求在下一个步骤激活干预。
 
         [!] 修改：新增 dynamic_betas 参数。
         """
@@ -230,7 +230,7 @@ class HookManager:
 
     def get_last_captured_activation(self) -> Optional[torch.Tensor]:
         """
-        由 SarcLogitsProcessor 调用，用于获取最近一次“读”钩子捕获的激活。
+        由 JEDILogitsProcessor 调用，用于获取最近一次“读”钩子捕获的激活。
         """
         if not self.captured_activations:
             return None

@@ -12,7 +12,7 @@
 
 [!] 修改：
 - `update` 方法现在返回累积分数 A_t，而不是触发索引。
-- `update` 方法不再自动重置状态。重置逻辑已移至 SarcLogitsProcessor。
+- `update` 方法不再自动重置状态。重置逻辑已移至 JEDILogitsProcessor。
 """
 
 import torch

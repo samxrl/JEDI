@@ -30,7 +30,7 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 # JEDI 组件
-from JEDI_guard.guard import Guard, SarcLogitsProcessor as BaseSarc
+from JEDI_guard.guard import Guard, JEDILogitsProcessor as BaseJEDI
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +112,9 @@ def compute_score(success: bool, feedback: JediFeedback, total_tokens: int) -> f
     return score
 
 
-class LoggingSarcLogitsProcessor(BaseSarc):
+class LoggingJEDILogitsProcessor(BaseJEDI):
     """
-    对 JEDI SarcLogitsProcessor 的轻量封装，记录 r_t 与 A_t 轨迹，
+    对 JEDI JEDILogitsProcessor 的轻量封装，记录 r_t 与 A_t 轨迹，
     便于攻击算法提取反馈信号。
     """
 
@@ -312,12 +312,12 @@ class AdaptiveGCG:
         output_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
         # 从 Logging 处理器获取轨迹
-        processor: LoggingSarcLogitsProcessor = getattr(self.guard, "latest_processor", None)
+        processor: LoggingJEDILogitsProcessor = getattr(self.guard, "latest_processor", None)
         if processor is None or not processor.A_list:
             # 可能是生成的 token 极短或者没有进入处理器循环
             # 提供一个默认的空反馈防止崩溃
             if processor is None:
-                raise RuntimeError("未能获取 JEDI 轨迹，请确认已替换 SarcLogitsProcessor。")
+                raise RuntimeError("未能获取 JEDI 轨迹，请确认已替换 JEDILogitsProcessor。")
             else:
                 logger.warning("JEDI 轨迹为空 (A_list)，可能是生成长度为 0。使用默认安全反馈。")
                 A_values = torch.tensor([0.0])
@@ -457,7 +457,7 @@ class AdaptiveGCG:
             sample_id,
             best_score,
             alarm_status,
-            bool(best_feedback and best_feedback.alarm is False),
+            success,
         )
 
         # 将最佳 suffix 也写入最后一条日志方便复现
@@ -537,10 +537,10 @@ def main():
 
     # 2) 加载 JEDI Guard，并替换处理器
     guard = Guard.from_artifacts(defense_artifacts, device=device)
-    # 覆盖原 SarcLogitsProcessor
+    # 覆盖原 JEDILogitsProcessor
     import JEDI_guard.guard as guard_module
 
-    guard_module.SarcLogitsProcessor = LoggingSarcLogitsProcessor
+    guard_module.JEDILogitsProcessor = LoggingJEDILogitsProcessor
 
     attacker = AdaptiveGCG(
         model=model,
