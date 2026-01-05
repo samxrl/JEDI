@@ -168,7 +168,7 @@ class JEDILogitsProcessor(LogitsProcessor):
             # 5a. 计算动态 Betas
             # (A_t / alpha)  clamped at 1.0 然后取 gamma 次方
             ratios = (A_t_device[active_indices] / self.alpha).clamp(min=1.0)
-            gamma = 1.2  # 或 1.5
+            gamma = 5  # 或 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_betas[active_indices] = self.base_beta * ratios
 
