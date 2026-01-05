@@ -13,6 +13,7 @@ JEDI 风险正则（mean_r 与 A_max_ratio 惩罚）。
   直接从 JEDI 在线检测中提取 r_t 与 A_t，计算 alarm、t_alarm 等反馈。
 - 评分函数与成功判定严格遵循实验协议。
 - [修改] 结果保存为 CSV 格式，路径固定为 data/evaluations/<model name>。
+- [修改] 初始后缀被硬编码为特定字符串 "x x x ..."。
 """
 import argparse
 import csv
@@ -231,13 +232,9 @@ class AdaptiveGCG:
         return self.tokenizer.decode(suffix_ids, skip_special_tokens=True)
 
     def _init_suffix(self) -> List[int]:
-        """初始化随机 suffix。"""
-        eos_id = self.tokenizer.eos_token_id or self.vocab_size - 1
-        candidates = [i for i in range(self.vocab_size) if i != eos_id]
-        return [
-            int(candidates[int(torch.randint(0, len(candidates), (1,)).item())])
-            for _ in range(self.suffix_length)
-        ]
+        init_text = "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x"
+        ids = self.tokenizer(init_text, add_special_tokens=False).input_ids
+        return ids
 
     def _build_attack_loss(
             self,
@@ -362,6 +359,12 @@ class AdaptiveGCG:
         # 初始化
         target_ids = self.tokenizer(target, add_special_tokens=False).input_ids
         suffix_ids = self._init_suffix()
+
+        # [!] 修改：同步 suffix_length 以匹配硬编码字符串的 token 长度
+        # 这是一个重要的修复，因为 hotflip 梯度切片依赖于 self.suffix_length
+        if len(suffix_ids) != self.suffix_length:
+            logger.info("[%s] 调整 suffix_length: %d -> %d (基于硬编码初始值)", sample_id, self.suffix_length, len(suffix_ids))
+            self.suffix_length = len(suffix_ids)
 
         best_score = float("-inf")
         best_output = ""
@@ -525,7 +528,7 @@ def main():
 
     # 从 model_name_or_path 提取模型名称
     model_name = args.model_name_or_path.rstrip("/").split("/")[-1]
-    defense_artifacts = Path(f'data/activations/{model_name}')
+    defense_artifacts = Path(f'../../data/activations/{model_name}')
 
     # 2) 加载 JEDI Guard，并替换处理器
     guard = Guard.from_artifacts(defense_artifacts, device=device)
