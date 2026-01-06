@@ -10,6 +10,7 @@ PAIR 思路的自适应攻击流程。
 import argparse
 import copy
 import csv
+import gc
 import json
 import logging
 import os
@@ -435,7 +436,16 @@ class AdaptivePAIR:
         self.guard.clear_batch_log_target()
         self.guard.latest_processor = None
 
-        return output_text, feedback, new_tokens.numel()
+        output_len = new_tokens.numel()
+
+        del inputs, trigger_logs, generated, sequence, new_tokens
+        del processor, A_values, r_values
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        gc.collect()
+
+        return output_text, feedback, output_len
 
     def _check_success(self, output_text: str) -> Tuple[bool, bool]:
         lower = output_text.lower()
@@ -693,29 +703,6 @@ def main():
         lm_judge=lm_judge,
     )
 
-    prompts = load_prompts(Path(args.input_prompts))
-
-    final_results = []
-    all_query_logs: List[QueryLog] = []
-
-    method_name = "PAIR" if args.disable_adaptive else "Adaptive-PAIR"
-
-    for sample_id, goal, target in tqdm(prompts):
-        logs, best_prompt, best_output = attacker.attack_single(
-            sample_id, goal, target, method_name=method_name
-        )
-        all_query_logs.extend(logs)
-
-        final_results.append(
-            {
-                "id": sample_id,
-                "Goal": goal,
-                "Target": target,
-                "prompt": best_prompt,
-                "best_output": best_output,
-            }
-        )
-
     output_dir = Path(f"data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -727,16 +714,50 @@ def main():
         prompts_csv = output_dir / "standard_pair_prompts.csv"
         logs_csv = output_dir / "standard_pair_query_logs.csv"
 
-    if final_results:
+    prompt_fieldnames = ["id", "Goal", "Target", "prompt", "best_output"]
+    if not prompts_csv.exists() or prompts_csv.stat().st_size == 0:
         with open(prompts_csv, mode="w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "Goal", "Target", "prompt", "best_output"])
+            writer = csv.DictWriter(f, fieldnames=prompt_fieldnames)
             writer.writeheader()
-            for row in final_results:
-                writer.writerow(row)
 
-        logger.info("所有最终生成的提示已保存至 CSV: %s", prompts_csv)
-    else:
-        logger.warning("没有生成任何结果。")
+    existing_results: Dict[str, Dict[str, str]] = {}
+    if prompts_csv.exists():
+        with open(prompts_csv, mode="r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("id"):
+                    existing_results[row["id"]] = row
+
+    prompts = load_prompts(Path(args.input_prompts))
+
+    all_query_logs: List[QueryLog] = []
+
+    method_name = "PAIR" if args.disable_adaptive else "Adaptive-PAIR"
+
+    for sample_id, goal, target in tqdm(prompts):
+        if sample_id in existing_results:
+            logger.info("样本 %s 已存在于结果文件，跳过。", sample_id)
+            continue
+
+        logs, best_prompt, best_output = attacker.attack_single(
+            sample_id, goal, target, method_name=method_name
+        )
+        all_query_logs.extend(logs)
+
+        result_row = {
+            "id": sample_id,
+            "Goal": goal,
+            "Target": target,
+            "prompt": best_prompt,
+            "best_output": best_output,
+        }
+
+        with open(prompts_csv, mode="a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=prompt_fieldnames)
+            writer.writerow(result_row)
+
+        existing_results[sample_id] = result_row
+        logger.info("样本 %s 的结果已写入: %s", sample_id, prompts_csv)
 
     if all_query_logs:
         with open(logs_csv, mode="w", encoding="utf-8", newline="") as f:
