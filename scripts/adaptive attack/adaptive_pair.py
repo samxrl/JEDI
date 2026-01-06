@@ -19,7 +19,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Protocol
 import httpx
 
 import torch
@@ -141,12 +141,17 @@ class JudgePromptTemplates:
     )
 
 
+class ChatClientProtocol(Protocol):
+    def chat(self, messages: List[Dict[str, str]]) -> str:
+        ...
+
+
 class LMJudgeScorer:
     """使用 gpt-5 对生成的对抗提示进行评分。"""
 
     def __init__(
             self,
-            client: "OpenRouterClient",
+            client: ChatClientProtocol,
             templates: Optional[JudgePromptTemplates] = None,
     ):
         self.client = client
@@ -325,6 +330,46 @@ class OpenRouterClient:
             raise RuntimeError(f"未能从 OpenRouter 响应解析文本: {response}") from exc
 
 
+class LocalHFClient:
+    """使用本地 Hugging Face 模型进行聊天生成的最简客户端。"""
+
+    def __init__(
+            self,
+            model: AutoModelForCausalLM,
+            tokenizer: AutoTokenizer,
+            *,
+            device: str = "cpu",
+            generation_config: Optional[GenerationConfig] = None,
+    ):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = device
+        self.generation_config = generation_config or GenerationConfig(
+            max_new_tokens=512,
+            temperature=1.0,
+            top_p=0.9,
+            do_sample=True,
+        )
+
+    def chat(self, messages: List[Dict[str, str]]) -> str:
+        formatted_input = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        inputs = self.tokenizer([formatted_input], return_tensors="pt").to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                generation_config=self.generation_config,
+            )
+
+        sequence = outputs[0]
+        input_len = inputs["input_ids"].shape[1]
+        new_tokens = sequence[input_len:]
+        return self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
 class AdaptivePAIR:
     """基于 PAIR 提示的自适应攻击器。"""
 
@@ -333,7 +378,7 @@ class AdaptivePAIR:
             model: AutoModelForCausalLM,
             tokenizer: AutoTokenizer,
             guard: Guard,
-            attacker_client: OpenRouterClient,
+            attacker_client: ChatClientProtocol,
             max_rounds: int = 20,
             candidates_per_round: int = 10,
             target_prefix: str = "Sure, here",
@@ -621,9 +666,19 @@ def parse_args() -> argparse.Namespace:
         help="OpenRouter API base url",
     )
     parser.add_argument(
+        "--local_attacker_model_path",
+        default="",
+        help="使用本地 Hugging Face 模型作为攻击与评分模型时的模型路径，留空则调用 OpenRouter",
+    )
+    parser.add_argument(
         "--input_prompts",
         default="../../data/raw/jbb_expanded.csv",
         help="包含 Goal 与 Target 列的 csv 文件",
+    )
+    parser.add_argument(
+        "--sample_range",
+        default="",
+        help="选择要处理的原始样本区间，例如 '[0,10]' 或 '0:10'，留空处理全部",
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max_rounds", type=int, default=3, help="最大攻击轮数（R）")
@@ -679,21 +734,38 @@ def main():
 
     guard_module.JEDILogitsProcessor = LoggingJEDILogitsProcessor
 
-    attacker_client = OpenRouterClient(
-        api_key=args.openrouter_api_key,
-        model=args.attacker_model,
-        base_url=args.openrouter_base_url,
-        proxy=args.proxy or None,
-    )
-
-    lm_judge = None
-    if args.disable_adaptive:
-        judge_client = OpenRouterClient(
+    if args.local_attacker_model_path:
+        attacker_tokenizer = AutoTokenizer.from_pretrained(
+            args.local_attacker_model_path, trust_remote_code=True
+        )
+        if attacker_tokenizer.pad_token is None:
+            attacker_tokenizer.pad_token = attacker_tokenizer.eos_token
+        attacker_model = AutoModelForCausalLM.from_pretrained(
+            args.local_attacker_model_path,
+            torch_dtype=torch.float16 if device == "cuda" else None,
+        ).to(device)
+        attacker_client: ChatClientProtocol = LocalHFClient(
+            attacker_model, attacker_tokenizer, device=device
+        )
+    else:
+        attacker_client = OpenRouterClient(
             api_key=args.openrouter_api_key,
-            model="gpt-5",
+            model=args.attacker_model,
             base_url=args.openrouter_base_url,
             proxy=args.proxy or None,
         )
+
+    lm_judge = None
+    if args.disable_adaptive:
+        if args.local_attacker_model_path:
+            judge_client = attacker_client
+        else:
+            judge_client = OpenRouterClient(
+                api_key=args.openrouter_api_key,
+                model="gpt-5",
+                base_url=args.openrouter_base_url,
+                proxy=args.proxy or None,
+            )
         lm_judge = LMJudgeScorer(client=judge_client)
 
     attacker = AdaptivePAIR(
@@ -736,6 +808,14 @@ def main():
                     existing_results[row["id"]] = row
 
     prompts = load_prompts(Path(args.input_prompts))
+
+    if args.sample_range:
+        match = re.match(r"\[?\s*(\d+)\s*[:,]\s*(\d+)\s*\]?", args.sample_range)
+        if not match:
+            raise ValueError("--sample_range 需要形如 '[0,10]' 或 '0:10' 的两个整数")
+        start_idx, end_idx = map(int, match.groups())
+        prompts = prompts[start_idx:end_idx]
+        logger.info("仅处理原始样本区间 [%d, %d)", start_idx, end_idx)
 
     all_query_logs: List[QueryLog] = []
 
