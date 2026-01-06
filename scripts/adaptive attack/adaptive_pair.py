@@ -147,7 +147,7 @@ class ChatClientProtocol(Protocol):
 
 
 class LMJudgeScorer:
-    """使用 gpt-5 对生成的对抗提示进行评分。"""
+    """使用 API 模型对生成的对抗提示进行评分。"""
 
     def __init__(
             self,
@@ -161,12 +161,12 @@ class LMJudgeScorer:
     def _parse_rating(text: str) -> float:
         match = re.search(r"Rating:\s*\[\[\s*([\d.]+)\s*\]\]", text)
         if not match:
-            logger.warning("未能从 gpt-4o 响应中解析评分，返回 0。响应: %s", text)
+            logger.warning("未能从 API 模型响应中解析评分，返回 0。响应: %s", text)
             return 0.0
         try:
             return float(match.group(1))
         except ValueError:  # pragma: no cover - 防御性解析
-            logger.warning("gpt-4o 评分解析失败，返回 0。响应: %s", text)
+            logger.warning("API模型评分解析失败，返回 0。响应: %s", text)
             return 0.0
 
     def score(self, request: str, response: str) -> float:
@@ -180,7 +180,7 @@ class LMJudgeScorer:
         try:
             judge_reply = self.client.chat(messages, temperature=0.0, max_tokens=64)
         except Exception as exc:  # pragma: no cover - API 调用失败兜底
-            logger.error("调用 gpt-4o 评分失败: %s", exc, exc_info=True)
+            logger.error("调用API模型评分失败: %s", exc, exc_info=True)
             return 0.0
 
         return self._parse_rating(judge_reply)
@@ -652,6 +652,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--attacker_model",
+        # default="meta-llama/llama-3.3-70b-instruct",
         default="gpt-5",
         help="用于生成对抗性提示的 OpenRouter 模型（红队模型）",
     )
