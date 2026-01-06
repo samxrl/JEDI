@@ -396,7 +396,14 @@ class AdaptivePAIR:
         return prompt, improvement
 
     def _eval_with_guard(self, attack_prompt: str) -> Tuple[str, JediFeedback, int]:
-        inputs = self.tokenizer(attack_prompt, return_tensors="pt").to(self.device)
+        conversation = [{"role": "user", "content": attack_prompt}]
+        formatted_input = self.tokenizer.apply_chat_template(
+            conversation,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        inputs = self.tokenizer([formatted_input], return_tensors="pt").to(self.device)
 
         trigger_logs = [-1] * inputs["input_ids"].shape[0]
         self.guard.set_batch_log_target(trigger_logs)

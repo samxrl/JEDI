@@ -245,6 +245,13 @@ class AdaptiveGCG:
     def _decode_suffix(self, suffix_ids: List[int]) -> str:
         return self.tokenizer.decode(suffix_ids, skip_special_tokens=True)
 
+    def _format_chat(self, content: str, add_generation_prompt: bool = False):
+        return self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+
     def _init_suffix(self) -> List[int]:
         init_text = "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x"
         ids = self.tokenizer(init_text, add_special_tokens=False).input_ids
@@ -257,16 +264,37 @@ class AdaptiveGCG:
             target_ids: List[int],
             require_grad: bool = True,
             a_max_ratio: Optional[float] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]:
         """
         计算 attack loss，并返回梯度所需的相关张量。
-        返回 (loss, embeds, input_ids, prompt_len)。
+        返回 (loss, embeds, input_ids, prompt_len, suffix_start, suffix_len)。
         """
 
-        prompt_ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
-        input_ids = torch.tensor([prompt_ids + suffix_ids + target_ids], device=self.device)
+        suffix_text = self._decode_suffix(suffix_ids)
+
+        prompt_only_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        prompt_with_suffix_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt + suffix_text}],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+
+        chat_prompt_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt + suffix_text}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+
+        suffix_start = len(prompt_only_ids)
+        suffix_token_len = len(prompt_with_suffix_ids) - suffix_start
+
+        input_ids = torch.tensor([chat_prompt_ids + target_ids], device=self.device)
         labels = torch.tensor([
-            [-100] * (len(prompt_ids) + len(suffix_ids)) + target_ids
+            [-100] * len(chat_prompt_ids) + target_ids
         ], device=self.device)
 
         inputs_embeds = self.embedding_layer(input_ids)
@@ -286,7 +314,7 @@ class AdaptiveGCG:
             # 在非自适应模式（标准 GCG）下，直接优化目标概率，忽略 JEDI 状态
             loss = attack_loss
 
-        return loss, inputs_embeds, input_ids, len(prompt_ids)
+        return loss, inputs_embeds, input_ids, len(prompt_only_ids), suffix_start, suffix_token_len
 
     def _hotflip_candidates(
             self, grads: torch.Tensor, k: int
@@ -318,7 +346,8 @@ class AdaptiveGCG:
 
         suffix_text = self._decode_suffix(suffix_ids)
         full_prompt = prompt + suffix_text
-        inputs = self.tokenizer(full_prompt, return_tensors="pt").to(self.device)
+        formatted_input = self._format_chat(full_prompt, add_generation_prompt=True)
+        inputs = self.tokenizer([formatted_input], return_tensors="pt").to(self.device)
 
         trigger_logs = [-1] * inputs["input_ids"].shape[0]
         self.guard.set_batch_log_target(trigger_logs)
@@ -403,13 +432,13 @@ class AdaptiveGCG:
         for step in range(self.max_steps):
             # 1) 计算梯度（不计入 query）
             # loss 的计算在 _build_attack_loss 内部已根据 self.adaptive 进行了条件处理
-            loss, embeds, input_ids, prompt_len = self._build_attack_loss(
+            loss, embeds, input_ids, prompt_len, suffix_start, suffix_token_len = self._build_attack_loss(
                 prompt, suffix_ids, target_ids, require_grad=True
             )
             self.model.zero_grad()
             loss.backward()
 
-            grads = embeds.grad[0, prompt_len: prompt_len + self.suffix_length, :]
+            grads = embeds.grad[0, suffix_start: suffix_start + suffix_token_len, :]
             candidates = self._hotflip_candidates(grads, self.top_k)
 
             # 2) 选择最优候选（根据 attack loss）
@@ -419,7 +448,7 @@ class AdaptiveGCG:
                 trial_suffix = suffix_ids[:]
                 trial_suffix[pos] = tok_id
                 with torch.no_grad():
-                    trial_loss, _, _, _ = self._build_attack_loss(
+                    trial_loss, _, _, _, _, _ = self._build_attack_loss(
                         prompt, trial_suffix, target_ids, require_grad=False
                     )
                 loss_val = float(trial_loss.item())
