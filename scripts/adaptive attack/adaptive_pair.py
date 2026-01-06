@@ -205,7 +205,7 @@ def compute_score(
             + 1.0 * t_alarm_ratio
             - 1.0 * feedback.A_max_ratio
     )
-    return score
+    return max(score, 0)
 
 
 class LoggingJEDILogitsProcessor(BaseJEDI):
@@ -440,9 +440,6 @@ class AdaptivePAIR:
 
         del inputs, trigger_logs, generated, sequence, new_tokens
         del processor, A_values, r_values
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
         gc.collect()
 
         return output_text, feedback, output_len
@@ -703,7 +700,7 @@ def main():
         lm_judge=lm_judge,
     )
 
-    output_dir = Path(f"data/evaluations/{model_name}")
+    output_dir = Path(f"../../data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 根据模式动态生成文件名
@@ -758,6 +755,10 @@ def main():
 
         existing_results[sample_id] = result_row
         logger.info("样本 %s 的结果已写入: %s", sample_id, prompts_csv)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
     if all_query_logs:
         with open(logs_csv, mode="w", encoding="utf-8", newline="") as f:
