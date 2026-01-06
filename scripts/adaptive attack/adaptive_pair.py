@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 import requests
 
@@ -139,7 +140,7 @@ class JudgePromptTemplates:
 
 
 class LMJudgeScorer:
-    """使用 gpt-4o 对生成的对抗提示进行评分。"""
+    """使用 gpt-5 对生成的对抗提示进行评分。"""
 
     def __init__(
         self,
@@ -375,10 +376,8 @@ class AdaptivePAIR:
         return "\n".join(parts)
 
     def _generate_attack(self, conversation: List[Dict[str, str]], improve: bool) -> List[Dict[str, str]]:
-        attack_prefix = '{"improvement": "' if improve else '{"improvement": "","prompt": "'
-        messages = conversation + [{"role": "assistant", "content": attack_prefix}]
-        new_text = self.attacker_client.chat(messages)
-        conversation.append({"role": "assistant", "content": attack_prefix + new_text})
+        new_text = self.attacker_client.chat(conversation)
+        conversation.append({"role": "assistant", "content": new_text})
         return conversation
 
     def _parse_attack(self, conversation: List[Dict[str, str]]) -> Tuple[str, str]:
@@ -491,6 +490,9 @@ class AdaptivePAIR:
                 )
                 query_id += 1
 
+                logger.info("candidate_idx=%d, query_id=%d, score=%.2f, success=%s, refusal=%s, alarm=%s",
+                            candidate_idx, query_id, score, success, refusal, feedback.alarm)
+
                 query_logs.append(
                     QueryLog(
                         sample_id=sample_id,
@@ -582,7 +584,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--attacker_model",
-        default="gpt-4o",
+        default="gpt-5",
         help="用于生成对抗性提示的 OpenRouter 模型（红队模型）",
     )
     parser.add_argument(
@@ -617,7 +619,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--disable_adaptive",
         action="store_true",
-        help="禁用自适应反馈，使用原始 PAIR + gpt-4o 评分",
+        help="禁用自适应反馈，使用原始 PAIR + gpt-5 评分",
     )
     return parser.parse_args()
 
@@ -657,7 +659,7 @@ def main():
     if args.disable_adaptive:
         judge_client = OpenRouterClient(
             api_key=args.openrouter_api_key,
-            model="gpt-4o",
+            model="gpt-5",
             base_url=args.openrouter_base_url,
         )
         lm_judge = LMJudgeScorer(client=judge_client)
@@ -683,7 +685,7 @@ def main():
 
     method_name = "PAIR" if args.disable_adaptive else "Adaptive-PAIR"
 
-    for sample_id, goal, target in prompts:
+    for sample_id, goal, target in tqdm(prompts):
         logs, best_prompt, best_output = attacker.attack_single(
             sample_id, goal, target, method_name=method_name
         )
@@ -702,8 +704,14 @@ def main():
     output_dir = Path(f"data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prompts_csv = output_dir / "adaptive_pair_prompts.csv"
-    logs_csv = output_dir / "adaptive_pair_query_logs.csv"
+    # 根据模式动态生成文件名
+    if not args.disable_adaptive:
+        prompts_csv = output_dir / "adaptive_pair_prompts.csv"
+        logs_csv = output_dir / "adaptive_pair_query_logs.csv"
+    else:
+        prompts_csv = output_dir / "standard_pair_prompts.csv"
+        logs_csv = output_dir / "standard_pair_query_logs.csv"
+
 
     if final_results:
         with open(prompts_csv, mode="w", encoding="utf-8", newline="") as f:
