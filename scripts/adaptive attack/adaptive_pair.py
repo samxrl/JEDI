@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-import requests
+from openai import OpenAI
 
 # scripts/.../adaptive_pair.py -> repo_root
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -279,40 +279,35 @@ class OpenRouterClient:
     def __init__(self, api_key: str, model: str, base_url: str = "https://openrouter.ai/api/v1"):
         if not api_key:
             raise ValueError("OpenRouter API key 不能为空，请通过参数或环境变量 OPENROUTER_API_KEY 提供。")
-        self.api_key = api_key
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        base_url = base_url.rstrip("/")
 
-    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 256) -> str:
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        # 可选的 OpenRouter 追踪头
+        default_headers = {}
         referrer = os.getenv("OPENROUTER_REFERRER")
         if referrer:
-            headers["HTTP-Referer"] = referrer
+            default_headers["HTTP-Referer"] = referrer
         title = os.getenv("OPENROUTER_TITLE")
         if title:
-            headers["X-Title"] = title
+            default_headers["X-Title"] = title
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        self.client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            default_headers=default_headers or None,
+        )
 
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        data = response.json()
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 256) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
         try:
-            return data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as exc:  # pragma: no cover - 防御性解析
-            raise RuntimeError(f"未能从 OpenRouter 响应解析文本: {data}") from exc
+            return response.choices[0].message.content
+        except (KeyError, IndexError, AttributeError) as exc:  # pragma: no cover - 防御性解析
+            raise RuntimeError(f"未能从 OpenRouter 响应解析文本: {response}") from exc
 
 
 class AdaptivePAIR:
