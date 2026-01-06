@@ -437,11 +437,26 @@ class AdaptivePAIR:
 
     def _parse_attack(self, conversation: List[Dict[str, str]]) -> Tuple[str, str]:
         raw = conversation[-1]["content"]
-        attack_json = json.loads(raw)
+        cleaned = self._strip_markdown_wrappers(raw)
+        attack_json = json.loads(cleaned)
         prompt = attack_json.get("prompt", "")
         improvement = attack_json.get("improvement", "")
         logger.debug("Attack improvement: %s", improvement)
         return prompt, improvement
+
+    @staticmethod
+    def _strip_markdown_wrappers(raw: str) -> str:
+        """移除大模型回复中包裹 JSON 的 Markdown 代码块标记。"""
+
+        if not raw:
+            return raw
+
+        stripped = raw.strip()
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*?})\s*```", stripped, flags=re.DOTALL)
+        if fenced_match:
+            return fenced_match.group(1)
+
+        return stripped.strip("`\n")
 
     def _eval_with_guard(self, attack_prompt: str) -> Tuple[str, JediFeedback, int]:
         conversation = [{"role": "user", "content": attack_prompt}]
