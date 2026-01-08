@@ -564,7 +564,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="自适应 GCG 攻击脚本")
     parser.add_argument(
         "--model_name_or_path",
-        default="../../../../models/vicuna_7b_v1_5",
+        default="../../../models/vicuna_7b_v1_5",
         help="被攻击的 LLM 路径",
     )
     parser.add_argument(
@@ -648,11 +648,12 @@ def main():
             "id": sample_id,
             "Goal": goal,  # 原始提示
             "Target": target,  # 每条提示的攻击目标
-            "prompt": final_prompt  # 带后缀的提示
+            "prompt": final_prompt,  # 带后缀的提示
+            "best_output": best_output  # 模型生成的最佳输出
         })
 
     # 路径规则: data/evaluations/<model name>
-    output_dir = Path(f"data/evaluations/{model_name}")
+    output_dir = Path(f"../../data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 根据模式动态生成文件名
