@@ -800,7 +800,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--attacker_model",
-        default="openai/gpt-4o",
+        default="meta-llama/llama-3.3-70b-instruct",
         help="用于生成变异模板的 OpenRouter 模型",
     )
     parser.add_argument(
@@ -824,10 +824,10 @@ def parse_args() -> argparse.Namespace:
         help="选择要处理的原始样本区间，例如 '[0,10]' 或 '0:10'，留空处理全部",
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--query_budget", type=int, default=200, help="单条样本的查询预算")
+    parser.add_argument("--query_budget", type=int, default=60, help="单条样本的查询预算")
     parser.add_argument("--population_size", type=int, default=20, help="种群大小 (mu)")
     parser.add_argument("--offspring_size", type=int, default=10, help="每轮子代数量 (lambda)")
-    parser.add_argument("--iterations", type=int, default=18, help="迭代轮数")
+    parser.add_argument("--iterations", type=int, default=6, help="迭代轮数")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument(
         "--disable_adaptive",

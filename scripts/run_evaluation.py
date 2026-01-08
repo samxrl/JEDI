@@ -624,7 +624,6 @@ def main():
                 if device == "cuda": torch.cuda.empty_cache()
 
                 # Baseline
-                # [!] 添加计时统计
                 start_time = time.time()
                 baseline_outputs, baseline_triggers = run_generation(
                     model, tokenizer, prompts, gen_config, batch_size, guard=None
@@ -645,6 +644,7 @@ def main():
                 del baseline_outputs, baseline_triggers, df_baseline
                 gc.collect()
                 if device == "cuda": torch.cuda.empty_cache()
+                # Baseline
 
         else:
             logger.warning("跳过可用性评估，因为数据集为空或配置为跳过。")

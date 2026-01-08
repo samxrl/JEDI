@@ -11,6 +11,8 @@
     - A1 (满足型): 用户提示 + 模型满足的前缀。
     - A2 (拒绝型): 用户提示 + 模型拒绝的前缀。
 4.  处理良性（benign）数据集，将其与“满足”前缀配对，生成 B1 (良性-满足) 样本。
+    - 支持 CSV 格式（读取 'prompt' 或 'Goal' 列）。
+    - 支持 JSONL 格式（特定支持 justeval 结构，筛选 source_id!=alpaca_eval 且 category==regular）。
 5.  将所有生成的对话样本以结构化的 CSV 格式保存到处理后的数据目录中。
     - 每个样本包含原始提示、所用前缀、类别以及符合模型输入的对话结构（对话结构将作为JSON字符串存储）。
 
@@ -221,28 +223,70 @@ def process_dataset(config: dict):
         all_prompts = []
         for file_info in input_files:
             file_path = base_dir / Path(file_info)
-            prompt_column = 'prompt'
-            try:
-                df = pd.read_csv(file_path)
-                if prompt_column not in df.columns:
-                    if 'Goal' in df.columns:
-                        prompt_column = 'Goal'
-                    else:
-                        raise ValueError(f"在 {file_path} 中找不到合适的提示列 ('prompt' or 'Goal')。")
+            prompts_from_file = []
 
-                num_rows = len(df)
-                prompts_from_file = []
-                if num_rows > 0:
-                    actual_sample_size = min(sample_size, num_rows)
-                    sampled_df = df.sample(n=actual_sample_size, random_state=42)
-                    for _, row in sampled_df.iterrows():
-                        prompt = row[prompt_column]
-                        if pd.notna(prompt):
-                            # 保存 prompt 和其来源文件名
-                            prompts_from_file.append((str(prompt), file_path.name))
+            try:
+                # 检查文件后缀，区分处理逻辑
+                if file_path.suffix.lower() == '.jsonl':
+                    # 处理 JSONL 格式 (专门针对 justeval 类型的结构)
+                    print(f"检测到 JSONL 文件，按 JustEval 结构处理: {file_path.resolve()}")
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+
+                    candidates = []
+                    for line in lines:
+                        if not line.strip():
+                            continue
+                        try:
+                            item = json.loads(line)
+                            # 筛选条件:
+                            # 1. source_id 不包含 'alpaca_eval'
+                            # 2. category 为 'regular'
+                            source_id = str(item.get("source_id", ""))
+                            category = str(item.get("category", ""))
+
+                            if "alpaca_eval" not in source_id and category == "regular":
+                                # 提取 prompt，优先使用 'instruction'，其次 'prompt'
+                                p_text = item.get("instruction") or item.get("prompt")
+                                if p_text:
+                                    candidates.append(str(p_text))
+                        except json.JSONDecodeError:
+                            print(f"WARNING: 跳过无法解析的 JSON 行 in {file_path.name}")
+                            continue
+
+                    # 对筛选后的数据进行采样
+                    if candidates:
+                        num_candidates = len(candidates)
+                        actual_sample_size = min(sample_size, num_candidates)
+                        sampled_list = random.sample(candidates, actual_sample_size)
+                        for p in sampled_list:
+                            prompts_from_file.append((p, file_path.name))
+                        print(f"从 {file_path.resolve()} 筛选出 {num_candidates} 条有效样本，并采样了 {len(prompts_from_file)} 条。")
+                    else:
+                        print(f"WARNING: 在 {file_path.name} 中未找到符合条件的样本 (source_id!=alpaca_eval, category==regular)。")
+
+                else:
+                    # 默认处理 CSV 格式 (原有逻辑)
+                    df = pd.read_csv(file_path)
+                    prompt_column = 'prompt'
+                    if prompt_column not in df.columns:
+                        if 'Goal' in df.columns:
+                            prompt_column = 'Goal'
+                        else:
+                            raise ValueError(f"在 {file_path} 中找不到合适的提示列 ('prompt' or 'Goal')。")
+
+                    num_rows = len(df)
+                    if num_rows > 0:
+                        actual_sample_size = min(sample_size, num_rows)
+                        sampled_df = df.sample(n=actual_sample_size, random_state=42)
+                        for _, row in sampled_df.iterrows():
+                            prompt = row[prompt_column]
+                            if pd.notna(prompt):
+                                # 保存 prompt 和其来源文件名
+                                prompts_from_file.append((str(prompt), file_path.name))
+                    print(f"从 {file_path.resolve()} (CSV) 成功采样 {len(prompts_from_file)} 条良性提示。")
 
                 all_prompts.extend(prompts_from_file)
-                print(f"从 {file_path.resolve()} 成功采样 {len(prompts_from_file)} 条良性提示。")
 
             except FileNotFoundError:
                 print(f"ERROR: 输入文件未找到: {file_path.resolve()}")
@@ -250,8 +294,9 @@ def process_dataset(config: dict):
                 print(f"ERROR: 处理文件 {file_path.resolve()} 时出错: {e}")
 
         if all_prompts:
+            # 再次打乱所有来源的样本
             random.shuffle(all_prompts)
-            print(f"总共采样 {len(all_prompts)} 条良性提示进行处理。")
+            print(f"总共收集 {len(all_prompts)} 条良性提示进行处理。")
 
             with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
                 header = ["prompt", "prefix", "category", "conversation", "source"]

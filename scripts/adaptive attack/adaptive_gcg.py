@@ -703,7 +703,7 @@ def main():
 
     if final_results:
         with open(csv_path, mode='w', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "Goal", "Target", "prompt"])
+            writer = csv.DictWriter(f, fieldnames=["id", "Goal", "Target", "prompt", "best_output"])
             writer.writeheader()
             for row in final_results:
                 writer.writerow(row)
