@@ -252,9 +252,6 @@ class AdaptiveGCG:
         marker_text = "<<SUFFIX_MARKER>>"
         if marker_text in prompt:
             raise ValueError("prompt 内容包含 suffix marker，请替换 marker 或清理输入。")
-        marker_ids = self.tokenizer(marker_text, add_special_tokens=False).input_ids
-        if not marker_ids:
-            raise ValueError("无法为 suffix marker 生成 token，请更换 marker 文本。")
 
         prompt_ids = self.tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
@@ -273,16 +270,27 @@ class AdaptiveGCG:
         )
         assistant_prefix_ids = prompt_with_gen_ids[len(prompt_ids):]
 
-        marker_start = None
-        for idx in range(len(prompt_with_marker_ids) - len(marker_ids) + 1):
-            if prompt_with_marker_ids[idx: idx + len(marker_ids)] == marker_ids:
-                marker_start = idx
-                break
-        if marker_start is None:
-            raise ValueError("未能在 chat template 中定位 suffix marker。")
+        prefix_len = 0
+        min_len = min(len(prompt_ids), len(prompt_with_marker_ids))
+        while prefix_len < min_len and prompt_ids[prefix_len] == prompt_with_marker_ids[prefix_len]:
+            prefix_len += 1
 
-        prompt_prefix_ids = prompt_with_marker_ids[:marker_start]
-        prompt_suffix_ids = prompt_with_marker_ids[marker_start + len(marker_ids):]
+        suffix_len = 0
+        max_suffix = min(len(prompt_ids) - prefix_len, len(prompt_with_marker_ids) - prefix_len)
+        while suffix_len < max_suffix:
+            if prompt_ids[-(suffix_len + 1)] != prompt_with_marker_ids[-(suffix_len + 1)]:
+                break
+            suffix_len += 1
+
+        inserted_len = len(prompt_with_marker_ids) - len(prompt_ids)
+        if inserted_len <= 0:
+            raise ValueError("未能在 chat template 中定位 suffix marker（无插入 token）。")
+
+        prompt_prefix_ids = prompt_ids[:prefix_len]
+        prompt_suffix_ids = prompt_ids[len(prompt_ids) - suffix_len:] if suffix_len > 0 else []
+        prompt_with_marker_middle = prompt_with_marker_ids[prefix_len: len(prompt_with_marker_ids) - suffix_len]
+        if len(prompt_with_marker_middle) != inserted_len:
+            raise ValueError("未能在 chat template 中定位 suffix marker（切分长度异常）。")
         if prompt_prefix_ids + prompt_suffix_ids != prompt_ids:
             logger.warning("chat template 用户内容切分校验失败，可能影响 suffix 插入位置。")
 
