@@ -280,10 +280,15 @@ class LoggingJEDILogitsProcessor(BaseJEDI):
 class OpenRouterClient:
     """最简 OpenRouter Chat Completions 客户端。"""
 
-    def __init__(self, api_key: str, model: str, base_url: str = "https://openrouter.ai/api/v1",
-                     proxy: Optional[str] = None,  # 新增
-                     timeout_s: float = 30,  # 可选：更稳的超时
-                 ):
+    def __init__(
+            self,
+            api_key: str,
+            model: str,
+            base_url: str = "https://openrouter.ai/api/v1",
+            proxy: Optional[str] = None,  # 新增
+            timeout_s: float = 30,  # 可选：更稳的超时
+            max_retries: int = 3,
+    ):
         if not api_key:
             raise ValueError("OpenRouter API key 不能为空，请通过参数或环境变量 OPENROUTER_API_KEY 提供。")
         self.model = model
@@ -311,20 +316,38 @@ class OpenRouterClient:
             default_headers=default_headers or None,
             http_client=http_client,
         )
+        self.max_retries = max_retries
 
-    def chat(self, messages: List[Dict[str, str]],temperature = 1.0, max_tokens = 4096) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens= max_tokens,
-            temperature=temperature,
-            top_p= 0.9
-        )
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 1.0, max_tokens: int = 4096) -> str:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+                try:
+                    return response.choices[0].message.content
+                except (KeyError, IndexError, AttributeError) as exc:  # pragma: no cover - 防御性解析
+                    raise RuntimeError(f"未能从 OpenRouter 响应解析文本: {response}") from exc
+            except Exception as exc:  # pragma: no cover - API 调用失败兜底
+                last_error = exc
+                if attempt < self.max_retries:
+                    logger.warning(
+                        "OpenRouter API 调用失败，10s 后重试（%d/%d）：%s",
+                        attempt,
+                        self.max_retries,
+                        exc,
+                    )
+                    time.sleep(10)
+                else:
+                    logger.error("OpenRouter API 调用失败，已达到最大重试次数：%s", exc, exc_info=True)
+                    raise
 
-        try:
-            return response.choices[0].message.content
-        except (KeyError, IndexError, AttributeError) as exc:  # pragma: no cover - 防御性解析
-            raise RuntimeError(f"未能从 OpenRouter 响应解析文本: {response}") from exc
+        raise RuntimeError("OpenRouter API 调用失败，未能获取响应。") from last_error
 
 
 class LocalHFClient:
