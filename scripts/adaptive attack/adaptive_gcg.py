@@ -603,14 +603,17 @@ def main():
     logger.info(f"攻击模式: {mode_str}")
 
     # 1) 加载模型与分词器
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+
+    model_path = "../../../models/" + args.model_name_or_path
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, torch_dtype=torch.float16 if device == "cuda" else None)
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16 if device == "cuda" else None)
     model.to(device)
 
     # 从 model_name_or_path 提取模型名称
-    model_name = args.model_name_or_path.rstrip("/").split("/")[-1]
+    model_name = model_path.rstrip("/").split("/")[-1]
     defense_artifacts = Path(f'../../data/activations/{model_name}')
 
     # 2) 加载 JEDI Guard，并替换处理器
