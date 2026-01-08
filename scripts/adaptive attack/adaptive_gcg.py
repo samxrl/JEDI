@@ -245,12 +245,56 @@ class AdaptiveGCG:
     def _decode_suffix(self, suffix_ids: List[int]) -> str:
         return self.tokenizer.decode(suffix_ids, skip_special_tokens=True)
 
-    def _format_chat(self, content: str, add_generation_prompt: bool = False):
-        return self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": content}],
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
+    def _split_prompt_template(
+        self,
+        prompt: str,
+    ) -> Tuple[List[int], List[int], List[int]]:
+        marker_text = "<<SUFFIX_MARKER>>"
+        if marker_text in prompt:
+            raise ValueError("prompt 内容包含 suffix marker，请替换 marker 或清理输入。")
+
+        prompt_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=False,
         )
+        prompt_with_marker_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt + marker_text}],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        prompt_with_gen_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        assistant_prefix_ids = prompt_with_gen_ids[len(prompt_ids):]
+
+        prefix_len = 0
+        min_len = min(len(prompt_ids), len(prompt_with_marker_ids))
+        while prefix_len < min_len and prompt_ids[prefix_len] == prompt_with_marker_ids[prefix_len]:
+            prefix_len += 1
+
+        suffix_len = 0
+        max_suffix = min(len(prompt_ids) - prefix_len, len(prompt_with_marker_ids) - prefix_len)
+        while suffix_len < max_suffix:
+            if prompt_ids[-(suffix_len + 1)] != prompt_with_marker_ids[-(suffix_len + 1)]:
+                break
+            suffix_len += 1
+
+        inserted_len = len(prompt_with_marker_ids) - len(prompt_ids)
+        if inserted_len <= 0:
+            raise ValueError("未能在 chat template 中定位 suffix marker（无插入 token）。")
+
+        prompt_prefix_ids = prompt_ids[:prefix_len]
+        prompt_suffix_ids = prompt_ids[len(prompt_ids) - suffix_len:] if suffix_len > 0 else []
+        prompt_with_marker_middle = prompt_with_marker_ids[prefix_len: len(prompt_with_marker_ids) - suffix_len]
+        if len(prompt_with_marker_middle) != inserted_len:
+            raise ValueError("未能在 chat template 中定位 suffix marker（切分长度异常）。")
+        if prompt_prefix_ids + prompt_suffix_ids != prompt_ids:
+            logger.warning("chat template 用户内容切分校验失败，可能影响 suffix 插入位置。")
+
+        return prompt_prefix_ids, prompt_suffix_ids, assistant_prefix_ids
 
     def _init_suffix(self) -> List[int]:
         init_text = "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x"
@@ -270,27 +314,12 @@ class AdaptiveGCG:
         返回 (loss, embeds, input_ids, prompt_len, suffix_start, suffix_len)。
         """
 
-        suffix_text = self._decode_suffix(suffix_ids)
+        prompt_prefix_ids, prompt_suffix_ids, assistant_prefix_ids = self._split_prompt_template(prompt)
+        chat_prompt_ids = prompt_prefix_ids + suffix_ids + prompt_suffix_ids + assistant_prefix_ids
 
-        prompt_only_ids = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=True,
-            add_generation_prompt=False,
-        )
-        prompt_with_suffix_ids = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt + suffix_text}],
-            tokenize=True,
-            add_generation_prompt=False,
-        )
-
-        chat_prompt_ids = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt + suffix_text}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-
-        suffix_start = len(prompt_only_ids)
-        suffix_token_len = len(prompt_with_suffix_ids) - suffix_start
+        suffix_start = len(prompt_prefix_ids)
+        suffix_token_len = len(suffix_ids)
+        prompt_ids = prompt_prefix_ids + prompt_suffix_ids
 
         input_ids = torch.tensor([chat_prompt_ids + target_ids], device=self.device)
         labels = torch.tensor([
@@ -314,7 +343,7 @@ class AdaptiveGCG:
             # 在非自适应模式（标准 GCG）下，直接优化目标概率，忽略 JEDI 状态
             loss = attack_loss
 
-        return loss, inputs_embeds, input_ids, len(prompt_only_ids), suffix_start, suffix_token_len
+        return loss, inputs_embeds, input_ids, len(prompt_ids), suffix_start, suffix_token_len
 
     def _hotflip_candidates(
             self, grads: torch.Tensor, k: int
@@ -344,10 +373,15 @@ class AdaptiveGCG:
         该操作计入 query 预算。
         """
 
-        suffix_text = self._decode_suffix(suffix_ids)
-        full_prompt = prompt + suffix_text
-        formatted_input = self._format_chat(full_prompt, add_generation_prompt=True)
-        inputs = self.tokenizer([formatted_input], return_tensors="pt").to(self.device)
+        prompt_prefix_ids, prompt_suffix_ids, assistant_prefix_ids = self._split_prompt_template(prompt)
+        input_ids = torch.tensor(
+            [prompt_prefix_ids + suffix_ids + prompt_suffix_ids + assistant_prefix_ids],
+            device=self.device,
+        )
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones_like(input_ids),
+        }
 
         trigger_logs = [-1] * inputs["input_ids"].shape[0]
         self.guard.set_batch_log_target(trigger_logs)
