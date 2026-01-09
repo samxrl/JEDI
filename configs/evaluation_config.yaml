@@ -67,10 +67,12 @@ utility_dataset_config:
     - name: "alpaca_eval"
       filename: "alpaca_eval.json"
       prompt_column: "instruction"
+      max_new_tokens: 2048
 
     - name: "xstest"
       filename: "xstest_prompts.csv"
       prompt_column: "prompt"
+      max_new_tokens: 512
 
 # 用于评估“安全性”
 safety_dataset_config:
@@ -104,6 +106,8 @@ safety_dataset_config:
 
   # 安全性数据集的采样大小 (0 表示全部)
   sample_size: 0
+  # [新增] 安全性数据集生成时的 max_new_tokens (未设置则使用 generation_kwargs.max_new_tokens)
+  max_new_tokens: 2048
 
 # --- 4. 评测参数 ---
 # 在评测时要生成的 token 数量

@@ -128,6 +128,7 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
         filename = dataset_config.get('filename')
         # prompt_column 对于 json 可能是 instruction，对于 csv 可能是列名
         prompt_col = dataset_config.get('prompt_column', 'prompt')
+        max_new_tokens = dataset_config.get('max_new_tokens')
 
         if not name or not filename:
             logger.warning(f"跳过一个无效的良性数据集条目 (缺少 name 或 filename): {dataset_config}")
@@ -168,6 +169,7 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
 
             # [!] 关键：添加数据集名称
             df['utility_dataset_name'] = name
+            df['max_new_tokens'] = max_new_tokens
 
             # 为良性数据集填充占位符
             if 'behavior' not in df.columns:
@@ -266,6 +268,7 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
 
     file_path = data_dir / config['filename']
     base_cols = config['base_columns']
+    max_new_tokens = config.get('max_new_tokens')
     # attack_cols = config['attack_columns_to_eval'] # 上方已获取
 
     if not file_path.exists():
@@ -312,6 +315,7 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
 
     # [!] 添加占位符，以便与良性数据集合并
     df_long['utility_dataset_name'] = 'N/A'
+    df_long['max_new_tokens'] = max_new_tokens
 
     if sample_size > 0 and sample_size < len(df_long):
         # 注意：采样可能导致某些攻击方法的样本变少
@@ -491,6 +495,35 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
     return metrics
 
 
+def get_override_max_new_tokens(df: pd.DataFrame) -> Optional[int]:
+    """
+    从数据集中解析 max_new_tokens 覆盖值。
+    """
+    if 'max_new_tokens' not in df.columns:
+        return None
+    values = df['max_new_tokens'].dropna().unique()
+    if len(values) == 0:
+        return None
+    if len(values) > 1:
+        logger.warning(f"检测到多个 max_new_tokens 值: {values}。将使用第一个值。")
+    try:
+        return int(values[0])
+    except (TypeError, ValueError):
+        logger.warning(f"max_new_tokens 值无效: {values[0]}，将使用默认配置。")
+        return None
+
+
+def build_generation_config(base_config: GenerationConfig, max_new_tokens_override: Optional[int]) -> GenerationConfig:
+    """
+    基于全局 GenerationConfig 构建带有可选 max_new_tokens 覆盖的配置。
+    """
+    if max_new_tokens_override is None:
+        return base_config
+    config_dict = base_config.to_dict()
+    config_dict["max_new_tokens"] = max_new_tokens_override
+    return GenerationConfig(**config_dict)
+
+
 def main():
     parser = argparse.ArgumentParser(description="运行 JEDI 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
     parser.add_argument('--config', type=str, default='configs/evaluation_config.yaml',
@@ -596,6 +629,8 @@ def main():
                 df_utility_subset = df_utility_all[df_utility_all['utility_dataset_name'] == dataset_name].reset_index(drop=True)
                 prompts = df_utility_subset['prompt'].tolist()
                 num_samples = len(prompts)
+                dataset_max_new_tokens = get_override_max_new_tokens(df_utility_subset)
+                dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
 
                 if not prompts:
                     logger.warning(f"良性数据集 {dataset_name} 没有可运行的提示，跳过。")
@@ -605,7 +640,7 @@ def main():
                 # [!] 添加计时统计
                 start_time = time.time()
                 guarded_outputs, guarded_triggers = run_generation(
-                    model, tokenizer, prompts, gen_config, batch_size, guard=guard
+                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
                 )
                 end_time = time.time()
                 total_duration = end_time - start_time
@@ -626,7 +661,7 @@ def main():
                 # Baseline
                 start_time = time.time()
                 baseline_outputs, baseline_triggers = run_generation(
-                    model, tokenizer, prompts, gen_config, batch_size, guard=None
+                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
                 )
                 end_time = time.time()
                 total_duration = end_time - start_time
@@ -660,6 +695,8 @@ def main():
                 logger.info(f"--- 正在评估攻击方法: {method} ---")
                 df_attack = df_safety_long[df_safety_long['attack_method'] == method].reset_index(drop=True)
                 prompts = df_attack['prompt'].tolist()
+                dataset_max_new_tokens = get_override_max_new_tokens(df_attack)
+                dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
 
                 if not prompts:
                     logger.warning(f"方法 {method} 没有可运行的提示，跳过。")
@@ -667,7 +704,7 @@ def main():
 
                 # Baseline
                 baseline_outputs, baseline_triggers = run_generation(
-                    model, tokenizer, prompts, gen_config, batch_size, guard=None
+                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
                 )
                 df_baseline = df_attack.copy()
                 df_baseline['assistant_output'] = baseline_outputs
@@ -682,7 +719,7 @@ def main():
 
                 # Guarded
                 guarded_outputs, guarded_triggers = run_generation(
-                    model, tokenizer, prompts, gen_config, batch_size, guard=guard
+                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
                 )
                 df_guarded = df_attack.copy()
                 df_guarded['assistant_output'] = guarded_outputs
