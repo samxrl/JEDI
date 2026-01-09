@@ -9,13 +9,13 @@ output_dir: data/processed
 
 # LLM名称
 #llm_name: vicuna_7b_v1_5
-llm_name: mistral_7b_v2
+llm_name: Qwen2_5-7B-Instruct
 
 # 越狱数据集配置
 jailbreak_dataset:
   # 相对于项目根目录的输入文件路径
   # input_file: data/raw/vicuna_7b_v1_5_sampled_jailbreaks.json
-  input_file: data/raw/mistral_7b_v2_sampled_jailbreaks.json
+  input_file: data/raw/qwen_7b_chat_sampled_jailbreaks.json
 
 
 # 良性数据集配置 (可选)
