@@ -524,6 +524,401 @@ def build_generation_config(base_config: GenerationConfig, max_new_tokens_overri
     return GenerationConfig(**config_dict)
 
 
+def format_ablation_tag(prefix: str, value: float) -> str:
+    """
+    将消融实验参数格式化为安全的目录/文件标签。
+    """
+    formatted = f"{value:g}"
+    return f"{prefix}_{formatted.replace('.', 'p')}"
+
+
+def normalize_ablation_list(name: str, values: Any) -> List[float]:
+    """
+    规范化消融实验参数列表为浮点数列表。
+    """
+    if values is None:
+        logger.warning(f"未在配置中找到 {name}，将跳过该消融实验列表。")
+        return []
+    if not isinstance(values, list):
+        logger.warning(f"{name} 应为列表，但收到: {type(values)}。将跳过该消融实验列表。")
+        return []
+    try:
+        return [float(v) for v in values]
+    except (TypeError, ValueError):
+        logger.warning(f"{name} 列表包含无法转换为浮点数的值: {values}。将跳过该消融实验列表。")
+        return []
+
+
+def run_full_evaluation(
+    guard: Guard,
+    model,
+    tokenizer,
+    df_utility_all: pd.DataFrame,
+    df_safety_long: pd.DataFrame,
+    output_dir: Path,
+    config: dict,
+    gen_config: GenerationConfig,
+    batch_size: int,
+    run_utility: bool,
+    run_safety: bool,
+    device: str,
+    llm_name: str,
+    current_alpha: float,
+    current_beta: float
+) -> None:
+    """
+    运行一次完整的评测流程，并将结果保存到指定目录。
+    """
+    all_results_dfs = []  # 存储所有详细的 DF 结果
+
+    # ---
+    # --- 阶段 1: 生成
+    # ---
+    logger.info("--- 阶段 1: 开始文本生成 ---")
+    # --- 8a. 评估可用性 (FPR) ---
+    if not df_utility_all.empty:
+        utility_dataset_names = df_utility_all['utility_dataset_name'].unique()
+        logger.info(f"--- 评估开始: 可用性 (FPR)，将测试 {len(utility_dataset_names)} 个良性数据集 ---")
+
+        for dataset_name in utility_dataset_names:
+            logger.info(f"--- 正在评估良性数据集: {dataset_name} ---")
+            df_utility_subset = df_utility_all[df_utility_all['utility_dataset_name'] == dataset_name].reset_index(drop=True)
+            prompts = df_utility_subset['prompt'].tolist()
+            num_samples = len(prompts)
+            dataset_max_new_tokens = get_override_max_new_tokens(df_utility_subset)
+            dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
+
+            if not prompts:
+                logger.warning(f"良性数据集 {dataset_name} 没有可运行的提示，跳过。")
+                continue
+
+            # Guarded
+            start_time = time.time()
+            guarded_outputs, guarded_triggers = run_generation(
+                model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
+            )
+            end_time = time.time()
+            total_duration = end_time - start_time
+            avg_duration = total_duration / num_samples if num_samples > 0 else 0
+            logger.info(f"[Utility - {dataset_name}] Guarded 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
+
+            df_guarded = df_utility_subset.copy()
+            df_guarded['assistant_output'] = guarded_outputs
+            df_guarded['trigger_step'] = guarded_triggers
+            df_guarded['condition'] = 'guarded'
+            df_guarded['eval_split'] = 'utility'
+            all_results_dfs.append(df_guarded)
+
+            del guarded_outputs, guarded_triggers, df_guarded
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+            # Baseline
+            start_time = time.time()
+            baseline_outputs, baseline_triggers = run_generation(
+                model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
+            )
+            end_time = time.time()
+            total_duration = end_time - start_time
+            avg_duration = total_duration / num_samples if num_samples > 0 else 0
+            logger.info(f"[Utility - {dataset_name}] Baseline 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
+
+            df_baseline = df_utility_subset.copy()
+            df_baseline['assistant_output'] = baseline_outputs
+            df_baseline['trigger_step'] = baseline_triggers
+            df_baseline['condition'] = 'baseline'
+            df_baseline['eval_split'] = 'utility'
+            all_results_dfs.append(df_baseline)
+
+            del baseline_outputs, baseline_triggers, df_baseline
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+    else:
+        if run_utility:
+            logger.warning("跳过可用性评估，因为数据集为空。")
+        else:
+            logger.info("根据配置，跳过可用性评估。")
+
+    # --- 8b. 评估安全性 (ASR)，按攻击方法分组 ---
+    if not df_safety_long.empty:
+        attack_methods = df_safety_long['attack_method'].unique()
+        logger.info(f"--- 评估开始: 安全性 (ASR)，将测试 {len(attack_methods)} 种攻击方法 ---")
+
+        for method in attack_methods:
+            logger.info(f"--- 正在评估攻击方法: {method} ---")
+            df_attack = df_safety_long[df_safety_long['attack_method'] == method].reset_index(drop=True)
+            prompts = df_attack['prompt'].tolist()
+            dataset_max_new_tokens = get_override_max_new_tokens(df_attack)
+            dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
+
+            if not prompts:
+                logger.warning(f"方法 {method} 没有可运行的提示，跳过。")
+                continue
+
+            # Baseline
+            baseline_outputs, baseline_triggers = run_generation(
+                model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
+            )
+            df_baseline = df_attack.copy()
+            df_baseline['assistant_output'] = baseline_outputs
+            df_baseline['trigger_step'] = baseline_triggers
+            df_baseline['condition'] = 'baseline'
+            df_baseline['eval_split'] = 'safety'
+            all_results_dfs.append(df_baseline)
+
+            del df_baseline, baseline_outputs, baseline_triggers
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+            # Guarded
+            guarded_outputs, guarded_triggers = run_generation(
+                model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
+            )
+            df_guarded = df_attack.copy()
+            df_guarded['assistant_output'] = guarded_outputs
+            df_guarded['trigger_step'] = guarded_triggers
+            df_guarded['condition'] = 'guarded'
+            df_guarded['eval_split'] = 'safety'
+            all_results_dfs.append(df_guarded)
+
+            del df_guarded, guarded_outputs, guarded_triggers
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+    else:
+        if run_safety:
+            logger.warning("跳过安全性评估，因为数据集为空。")
+        else:
+            logger.info("根据配置，跳过安全性评估。")
+
+    logger.info("--- 阶段 1: 文本生成全部完成 ---")
+
+    if not all_results_dfs:
+        logger.error("未生成任何结果。请检查数据集路径和配置。")
+        return
+
+    # ---
+    # --- 阶段 2: 分类
+    # ---
+    logger.info("--- 阶段 2: 开始有害性判断 ---")
+
+    final_results_df = pd.concat(all_results_dfs, ignore_index=True)
+    del all_results_dfs
+
+    final_results_df['ablation_alpha'] = current_alpha
+    final_results_df['ablation_beta'] = current_beta
+
+    interim_csv_path = output_dir / f"{llm_name}_evaluation_INTERIM_all_results.csv"
+
+    if 'trigger_step' in final_results_df.columns:
+        final_results_df['trigger_step'] = final_results_df['trigger_step'].apply(lambda x: pd.NA if x == -1 else x).astype('Int64')
+
+    try:
+        logger.info(f"正在保存中间生成结果 (无标签) 到: {interim_csv_path}")
+
+        base_cols_config = config.get('safety_dataset_config', {}).get('base_columns', [])
+        ordered_cols = base_cols_config + [
+            'attack_method', 'utility_dataset_name', 'eval_split', 'dataset', 'condition',
+            'prompt', 'assistant_output', 'trigger_step', 'ablation_alpha', 'ablation_beta'
+        ]
+        current_cols = final_results_df.columns
+        final_ordered_cols = [c for c in ordered_cols if c in current_cols]
+        extra_cols = [c for c in current_cols if c not in final_ordered_cols]
+        final_ordered_cols.extend(extra_cols)
+
+        if 'label' not in final_ordered_cols:
+            final_ordered_cols.append('label')
+            final_results_df['label'] = pd.NA
+
+        final_results_df = final_results_df[final_ordered_cols]
+        final_results_df.to_csv(interim_csv_path, index=False, encoding='utf-8-sig')
+        logger.info("中间生成结果CSV 保存成功。")
+    except Exception as e:
+        logger.warning(f"保存 CSV 文件失败: {e}", exc_info=True)
+
+    try:
+        mask_safety = final_results_df['eval_split'] == 'safety'
+        df_to_classify = final_results_df[mask_safety].copy()
+
+        if not df_to_classify.empty:
+            logger.info(f"正在对 {len(df_to_classify)} 条 Safety 样本进行有害性判断 (跳过 Utility 样本)...")
+
+            logger.info("--- 正在加载分类器 LLM ---")
+            classifier_config = config['classifier_config']
+            classifier_batch_size = config.get('classifier_batch_size', 2)
+            classifier_model, classifier_tokenizer = load_model_and_tokenizer(
+                model_name=classifier_config['path'],
+                model_kwargs=classifier_config.get('kwargs', {}),
+                device=device
+            )
+
+            labels = run_classification(
+                classifier_model, classifier_tokenizer, df_to_classify, classifier_batch_size
+            )
+            df_to_classify['label'] = labels
+
+            final_results_df.update(df_to_classify)
+            logger.info("Safety 样本分类完成。")
+        else:
+            logger.info("没有需要分类的 Safety 样本 (或未启用 Safety 评测)。")
+
+    finally:
+        if 'classifier_model' in locals():
+            model_name = classifier_model.config.name_or_path if hasattr(classifier_model, 'config') and hasattr(
+                classifier_model.config, 'name_or_path') else "分类器 LLM"
+            logger.info(f"正在从内存中释放模型: {model_name}...")
+            del classifier_model
+            if 'classifier_tokenizer' in locals():
+                del classifier_tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            logger.info("模型内存已释放。")
+
+    logger.info("--- 阶段 3: 计算指标并保存拆分报告 ---")
+
+    df_utility_results = final_results_df[final_results_df['eval_split'] == 'utility']
+    if not df_utility_results.empty:
+        utility_dataset_names = df_utility_results['utility_dataset_name'].unique()
+        logger.info(f"正在为 {len(utility_dataset_names)} 个良性数据集生成结果 (跳过 FPR 指标计算)...")
+
+        for dataset_name in utility_dataset_names:
+            if pd.isna(dataset_name) or dataset_name == 'N/A':
+                continue
+
+            df_utility_subset = df_utility_results[df_utility_results['utility_dataset_name'] == dataset_name]
+            if df_utility_subset.empty:
+                continue
+
+            logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV)...")
+
+            try:
+                utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
+                df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
+
+                logger.info(f"已保存可用性 (Utility) '{dataset_name}' 详细 CSV 到: {utility_csv_path.name}")
+
+                if dataset_name == "alpaca_eval":
+                    logger.info("检测到 alpaca_eval 数据集，正在生成专用的评估 JSON 文件...")
+
+                    def save_alpaca_format(sub_df, out_filename, generator_name):
+                        records = []
+                        for _, row in sub_df.iterrows():
+                            record = {
+                                "dataset": row.get("dataset", "alpaca_eval"),
+                                "instruction": row.get("instruction", row.get("prompt", "")),
+                                "output": row.get("assistant_output", ""),
+                                "generator": generator_name
+                            }
+                            records.append(record)
+
+                        out_path = output_dir / out_filename
+                        with open(out_path, 'w', encoding='utf-8') as f:
+                            json.dump(records, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Alpaca Eval 格式结果已保存到: {out_path.name}")
+
+                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
+                    if not df_base.empty:
+                        save_alpaca_format(df_base, f"{llm_name}-alpaca_eval-baseline.json", f"{llm_name}-baseline")
+
+                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
+                    if not df_guard.empty:
+                        save_alpaca_format(df_guard, f"{llm_name}-alpaca_eval-JEDI.json", f"{llm_name}-JEDI")
+
+                if "xstest" in str(dataset_name).lower():
+                    logger.info(f"检测到 xstest 数据集 ('{dataset_name}')，正在生成专用的评估 CSV 文件...")
+
+                    def save_xstest_format(sub_df, out_filename):
+                        target_cols = ['id', 'type', 'prompt', 'completion', 'annotation_1', 'annotation_2', 'agreement', 'final_label']
+                        xstest_out = pd.DataFrame()
+
+                        if 'id' in sub_df.columns:
+                            xstest_out['id'] = sub_df['id']
+                        else:
+                            xstest_out['id'] = range(1, len(sub_df) + 1)
+
+                        if 'type' in sub_df.columns:
+                            xstest_out['type'] = sub_df['type']
+                        else:
+                            xstest_out['type'] = 'N/A'
+
+                        xstest_out['prompt'] = sub_df['prompt']
+                        xstest_out['completion'] = sub_df['assistant_output']
+
+                        for col in ['annotation_1', 'annotation_2', 'agreement', 'final_label']:
+                            xstest_out[col] = None
+
+                        xstest_out = xstest_out[target_cols]
+
+                        out_path = output_dir / out_filename
+                        xstest_out.to_csv(out_path, index=False, encoding='utf-8-sig')
+                        logger.info(f"XSTest 格式结果已保存到: {out_path.name}")
+
+                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
+                    if not df_base.empty:
+                        save_xstest_format(df_base, f"{llm_name}_xstest_baseline.csv")
+
+                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
+                    if not df_guard.empty:
+                        save_xstest_format(df_guard, f"{llm_name}_xstest_guarded.csv")
+
+            except Exception as e:
+                logger.error(f"保存可用性 (Utility) '{dataset_name}' 结果文件时失败: {e}", exc_info=True)
+    else:
+        logger.info("未找到可用性结果。")
+
+    df_safety_results = final_results_df[final_results_df['eval_split'] == 'safety']
+    if not df_safety_results.empty:
+        attack_methods = df_safety_results['attack_method'].unique()
+        logger.info(f"正在为 {len(attack_methods)} 种攻击方法计算 ASR 指标...")
+
+        for method in attack_methods:
+            if pd.isna(method) or method == 'N/A':
+                continue
+
+            df_attack = df_safety_results[df_safety_results['attack_method'] == method]
+            if df_attack.empty:
+                continue
+
+            baseline_asr_metrics = calculate_metrics(df_attack.query("condition == 'baseline'"), condition='baseline')
+            guarded_asr_metrics = calculate_metrics(df_attack.query("condition == 'guarded'"), condition='guarded')
+
+            attack_summary = {
+                f'safety_asr_attack_{method}': {
+                    'baseline': baseline_asr_metrics,
+                    'guarded': guarded_asr_metrics
+                }
+            }
+            logger.info(f"安全性 (ASR) for {method} - Baseline: {baseline_asr_metrics['rate']:.4f}, Guarded: {guarded_asr_metrics['rate']:.4f}")
+
+            try:
+                attack_csv_path = output_dir / f"{llm_name}_evaluation_detailed_attack_{method}.csv"
+                df_attack.to_csv(attack_csv_path, index=False, encoding='utf-8-sig')
+
+                attack_json_path = output_dir / f"{llm_name}_evaluation_summary_attack_{method}.json"
+                with open(attack_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(attack_summary, f, indent=2, default=str)
+
+                logger.info(f"已保存攻击方法 '{method}' 结果到: {attack_csv_path.name} 和 {attack_json_path.name}")
+            except Exception as e:
+                logger.error(f"保存攻击方法 '{method}' 结果文件时失败: {e}", exc_info=True)
+    else:
+        logger.info("未找到安全性结果，跳过 ASR 计算和保存。")
+
+    logger.info("评估流程全部完成。")
+
+    try:
+        if interim_csv_path.exists():
+            interim_csv_path.unlink()
+            logger.info(f"已清理临时文件: {interim_csv_path.name}")
+    except Exception as e:
+        logger.warning(f"清理临时文件 {interim_csv_path.name} 时失败: {e}", exc_info=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="运行 JEDI 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
     parser.add_argument('--config', type=str, default='configs/ablation_config.yaml',
@@ -550,8 +945,8 @@ def main():
 
     # --- 2. 设置路径 ---
     llm_name = config['llm_name']
-    output_dir = base_dir / config['output_dir'] / llm_name
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_base_dir = base_dir / config['output_dir'] / llm_name
+    output_base_dir.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data_dir = base_dir / config['data_dir']
 
@@ -564,12 +959,6 @@ def main():
     )
     batch_size = config.get('batch_size', 4)
 
-    all_results_dfs = []  # 存储所有详细的 DF 结果
-
-    # ---
-    # --- 阶段 1: 生成
-    # ---
-    logger.info("--- 阶段 1: 开始文本生成 ---")
     try:
         # --- 3. 加载 Guard ---
         logger.info("--- 正在加载 JEDI Guard ---")
@@ -615,124 +1004,55 @@ def main():
             df_safety_long = load_safety_dataset(safety_config, data_dir, safety_sample_size)
         else:
             logger.info("根据配置，跳过加载“安全性”数据集。")
+        base_alpha = guard.alpha
+        base_beta = config.get('base_beta', guard.base_beta)
+        alpha_list = normalize_ablation_list('alpha_list', config.get('alpha_list'))
+        bata_list = normalize_ablation_list('bata_list', config.get('bata_list'))
 
-        # --- 8a. 评估可用性 (FPR) ---
-        # [!] 修改：按良性数据集名称循环
-        # [!] 现有的 'if not df_utility_all.empty:' 检查已足够，
-        # 因为如果 run_utility=False, df_utility_all 将保持为空。
-        if not df_utility_all.empty:
-            utility_dataset_names = df_utility_all['utility_dataset_name'].unique()
-            logger.info(f"--- 评估开始: 可用性 (FPR)，将测试 {len(utility_dataset_names)} 个良性数据集 ---")
+        if not alpha_list and not bata_list:
+            logger.error("未提供任何消融实验参数列表 (alpha_list 或 bata_list)。")
+            return
 
-            for dataset_name in utility_dataset_names:
-                logger.info(f"--- 正在评估良性数据集: {dataset_name} ---")
-                df_utility_subset = df_utility_all[df_utility_all['utility_dataset_name'] == dataset_name].reset_index(drop=True)
-                prompts = df_utility_subset['prompt'].tolist()
-                num_samples = len(prompts)
-                dataset_max_new_tokens = get_override_max_new_tokens(df_utility_subset)
-                dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
+        ablation_settings = []
+        for alpha_offset in alpha_list:
+            current_alpha = base_alpha + alpha_offset
+            ablation_settings.append({
+                'name': format_ablation_tag('alpha', current_alpha),
+                'alpha': current_alpha,
+                'beta': base_beta
+            })
+        for beta in bata_list:
+            ablation_settings.append({
+                'name': format_ablation_tag('beta', beta),
+                'alpha': base_alpha,
+                'beta': beta
+            })
 
-                if not prompts:
-                    logger.warning(f"良性数据集 {dataset_name} 没有可运行的提示，跳过。")
-                    continue
-
-                # Guarded
-                # [!] 添加计时统计
-                start_time = time.time()
-                guarded_outputs, guarded_triggers = run_generation(
-                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
-                )
-                end_time = time.time()
-                total_duration = end_time - start_time
-                avg_duration = total_duration / num_samples if num_samples > 0 else 0
-                logger.info(f"[Utility - {dataset_name}] Guarded 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
-
-                df_guarded = df_utility_subset.copy()
-                df_guarded['assistant_output'] = guarded_outputs
-                df_guarded['trigger_step'] = guarded_triggers
-                df_guarded['condition'] = 'guarded'
-                df_guarded['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
-                all_results_dfs.append(df_guarded)
-
-                del guarded_outputs, guarded_triggers, df_guarded
-                gc.collect()
-                if device == "cuda": torch.cuda.empty_cache()
-
-                # Baseline
-                start_time = time.time()
-                baseline_outputs, baseline_triggers = run_generation(
-                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
-                )
-                end_time = time.time()
-                total_duration = end_time - start_time
-                avg_duration = total_duration / num_samples if num_samples > 0 else 0
-                logger.info(f"[Utility - {dataset_name}] Baseline 生成统计: 总耗时 {total_duration:.2f}s, 单样本平均耗时 {avg_duration:.4f}s")
-
-                df_baseline = df_utility_subset.copy()
-                df_baseline['assistant_output'] = baseline_outputs
-                df_baseline['trigger_step'] = baseline_triggers
-                df_baseline['condition'] = 'baseline'
-                df_baseline['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
-                # 'attack_method' 和 'utility_dataset_name' 已在加载时设置
-                all_results_dfs.append(df_baseline)
-
-                del baseline_outputs, baseline_triggers, df_baseline
-                gc.collect()
-                if device == "cuda": torch.cuda.empty_cache()
-                # Baseline
-
-        else:
-            logger.warning("跳过可用性评估，因为数据集为空或配置为跳过。")
-
-        # --- 8b. 评估安全性 (ASR)，按攻击方法分组 ---
-        # [!] 现有的 'if not df_safety_long.empty:' 检查已足够，
-        # 因为如果 run_safety=False, df_safety_long 将保持为空。
-        if not df_safety_long.empty:
-            attack_methods = df_safety_long['attack_method'].unique()
-            logger.info(f"--- 评估开始: 安全性 (ASR)，将测试 {len(attack_methods)} 种攻击方法 ---")
-
-            for method in attack_methods:
-                logger.info(f"--- 正在评估攻击方法: {method} ---")
-                df_attack = df_safety_long[df_safety_long['attack_method'] == method].reset_index(drop=True)
-                prompts = df_attack['prompt'].tolist()
-                dataset_max_new_tokens = get_override_max_new_tokens(df_attack)
-                dataset_gen_config = build_generation_config(gen_config, dataset_max_new_tokens)
-
-                if not prompts:
-                    logger.warning(f"方法 {method} 没有可运行的提示，跳过。")
-                    continue
-
-                # Baseline
-                baseline_outputs, baseline_triggers = run_generation(
-                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=None
-                )
-                df_baseline = df_attack.copy()
-                df_baseline['assistant_output'] = baseline_outputs
-                df_baseline['trigger_step'] = baseline_triggers
-                df_baseline['condition'] = 'baseline'
-                df_baseline['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
-                all_results_dfs.append(df_baseline)
-
-                del df_baseline, baseline_outputs, baseline_triggers
-                gc.collect()
-                if device == "cuda": torch.cuda.empty_cache()
-
-                # Guarded
-                guarded_outputs, guarded_triggers = run_generation(
-                    model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
-                )
-                df_guarded = df_attack.copy()
-                df_guarded['assistant_output'] = guarded_outputs
-                df_guarded['trigger_step'] = guarded_triggers
-                df_guarded['condition'] = 'guarded'
-                df_guarded['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
-                all_results_dfs.append(df_guarded)
-
-                del df_guarded, guarded_outputs, guarded_triggers
-                gc.collect()
-                if device == "cuda": torch.cuda.empty_cache()
-        else:
-            logger.warning("跳过安全性评估，因为数据集为空或配置为跳过。")
+        for setting in ablation_settings:
+            guard.alpha = setting['alpha']
+            guard.base_beta = setting['beta']
+            output_dir = output_base_dir / setting['name']
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                f"=== 开始消融实验: {setting['name']} (alpha={setting['alpha']}, beta={setting['beta']}) ==="
+            )
+            run_full_evaluation(
+                guard=guard,
+                model=model,
+                tokenizer=tokenizer,
+                df_utility_all=df_utility_all,
+                df_safety_long=df_safety_long,
+                output_dir=output_dir,
+                config=config,
+                gen_config=gen_config,
+                batch_size=batch_size,
+                run_utility=run_utility,
+                run_safety=run_safety,
+                device=device,
+                llm_name=llm_name,
+                current_alpha=setting['alpha'],
+                current_beta=setting['beta']
+            )
 
     finally:
         # --- 关键步骤: 释放被测 LLM ---
@@ -748,258 +1068,6 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("模型内存已释放。")
-
-    logger.info("--- 阶段 1: 文本生成全部完成 ---")
-
-    if not all_results_dfs:
-        logger.error("未生成任何结果。请检查数据集路径和配置。")
-        return
-
-    # ---
-    # --- 阶段 2: 分类
-    # ---
-    logger.info("--- 阶段 2: 开始有害性判断 ---")
-
-    final_results_df = pd.concat(all_results_dfs, ignore_index=True)
-    del all_results_dfs  # 释放列表内存
-
-    interim_csv_path = output_dir / f"{llm_name}_evaluation_INTERIM_all_results.csv"
-
-    # --- 在保存中间文件和最终文件之前，格式化 trigger_step ---
-    if 'trigger_step' in final_results_df.columns:
-        final_results_df['trigger_step'] = final_results_df['trigger_step'].apply(lambda x: pd.NA if x == -1 else x).astype('Int64')
-
-    # --- 整理列并保存 *第一次* (无 label) 到 *临时* 路径 ---
-    try:
-        logger.info(f"正在保存中间生成结果 (无标签) 到: {interim_csv_path}")
-
-        base_cols_config = config.get('safety_dataset_config', {}).get('base_columns', [])
-        ordered_cols = base_cols_config + [
-            'attack_method', 'utility_dataset_name', 'eval_split', 'dataset', 'condition', 'prompt', 'assistant_output', 'trigger_step'
-        ]
-        current_cols = final_results_df.columns
-        final_ordered_cols = [c for c in ordered_cols if c in current_cols]
-        extra_cols = [c for c in current_cols if c not in final_ordered_cols]
-        final_ordered_cols.extend(extra_cols)
-
-        if 'label' not in final_ordered_cols:
-            final_ordered_cols.append('label')
-            final_results_df['label'] = pd.NA
-
-        final_results_df = final_results_df[final_ordered_cols]
-        final_results_df.to_csv(interim_csv_path, index=False, encoding='utf-8-sig')
-        logger.info("中间生成结果CSV 保存成功。")
-    except Exception as e:
-        logger.warning(f"保存 CSV 文件失败: {e}", exc_info=True)
-
-    try:
-        # [!] 修改：分离需要分类的数据 (Safety) 和不需要分类的数据 (Utility)
-        mask_safety = final_results_df['eval_split'] == 'safety'
-        df_to_classify = final_results_df[mask_safety].copy()
-
-        # Utility 数据集 (如果存在) 将被跳过，label 保持为 NA
-        df_skip_classify = final_results_df[~mask_safety]
-
-        if not df_to_classify.empty:
-            logger.info(f"正在对 {len(df_to_classify)} 条 Safety 样本进行有害性判断 (跳过 Utility 样本)...")
-
-            # --- 5. 加载分类器 LLM ---
-            logger.info("--- 正在加载分类器 LLM ---")
-            classifier_config = config['classifier_config']
-            classifier_batch_size = config.get('classifier_batch_size', 2)
-            classifier_model, classifier_tokenizer = load_model_and_tokenizer(
-                model_name=classifier_config['path'],
-                model_kwargs=classifier_config.get('kwargs', {}),
-                device=device
-            )
-
-            # --- 运行分类 ---
-            labels = run_classification(
-                classifier_model, classifier_tokenizer, df_to_classify, classifier_batch_size
-            )
-            df_to_classify['label'] = labels
-
-            # 将分类后的结果更新回 final_results_df
-            # 使用索引对齐进行更新
-            final_results_df.update(df_to_classify)
-            logger.info("Safety 样本分类完成。")
-        else:
-            logger.info("没有需要分类的 Safety 样本 (或未启用 Safety 评测)。")
-
-    finally:
-        # --- 关键步骤: 释放分类器 LLM ---
-        if 'classifier_model' in locals():
-            model_name = classifier_model.config.name_or_path if hasattr(classifier_model, 'config') and hasattr(classifier_model.config,
-                                                                                                                 'name_or_path') else "分类器 LLM"
-            logger.info(f"正在从内存中释放模型: {model_name}...")
-            del classifier_model
-            if 'classifier_tokenizer' in locals():
-                del classifier_tokenizer
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            logger.info("模型内存已释放。")
-
-    logger.info("--- 阶段 3: 计算指标并保存拆分报告 ---")
-
-    # --- [!] 修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
-    # [!] 现有的 'if run_utility:' 检查不是必需的，
-    # 因为如果 run_utility=False, 'utility' 数据集将不存在于 final_results_df 中
-    df_utility_results = final_results_df[final_results_df['eval_split'] == 'utility']
-    if not df_utility_results.empty:
-        # 从结果中获取所有唯一的良性数据集名称
-        utility_dataset_names = df_utility_results['utility_dataset_name'].unique()
-        logger.info(f"正在为 {len(utility_dataset_names)} 个良性数据集生成结果 (跳过 FPR 指标计算)...")
-
-        for dataset_name in utility_dataset_names:
-            if pd.isna(dataset_name) or dataset_name == 'N/A': continue
-
-            # 筛选出当前循环的良性数据集
-            df_utility_subset = df_utility_results[df_utility_results['utility_dataset_name'] == dataset_name]
-            if df_utility_subset.empty: continue
-
-            # [!] 修改：不再计算 FPR，因为 label 缺失或 N/A
-            logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV)...")
-
-            # [!] 为这个特定的数据集保存独立的文件
-            try:
-                utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
-                df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
-
-                logger.info(f"已保存可用性 (Utility) '{dataset_name}' 详细 CSV 到: {utility_csv_path.name}")
-
-                # --- [新增] Alpaca Eval 特定格式输出 ---
-                if dataset_name == "alpaca_eval":
-                    logger.info("检测到 alpaca_eval 数据集，正在生成专用的评估 JSON 文件...")
-
-                    def save_alpaca_format(sub_df, out_filename, generator_name):
-                        records = []
-                        for _, row in sub_df.iterrows():
-                            record = {
-                                "dataset": row.get("dataset", "alpaca_eval"),  # 如果原数据有 dataset 字段则使用，否则默认
-                                "instruction": row.get("instruction", row.get("prompt", "")),  # instruction 是 alpaca 的 prompt
-                                "output": row.get("assistant_output", ""),
-                                "generator": generator_name
-                            }
-                            # 尝试保留 input 里的 extra fields 如果需要，但用户只指定了这4个
-                            records.append(record)
-
-                        out_path = output_dir / out_filename
-                        with open(out_path, 'w', encoding='utf-8') as f:
-                            json.dump(records, f, indent=2, ensure_ascii=False)
-                        logger.info(f"Alpaca Eval 格式结果已保存到: {out_path.name}")
-
-                    # 保存 Baseline
-                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
-                    if not df_base.empty:
-                        save_alpaca_format(df_base, f"{llm_name}-alpaca_eval-baseline.json", f"{llm_name}-baseline")
-
-                    # 保存 Guarded (JEDI)
-                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
-                    if not df_guard.empty:
-                        save_alpaca_format(df_guard, f"{llm_name}-alpaca_eval-JEDI.json", f"{llm_name}-JEDI")
-
-                # --- [新增] XSTest 特定格式输出 ---
-                if "xstest" in str(dataset_name).lower():
-                    logger.info(f"检测到 xstest 数据集 ('{dataset_name}')，正在生成专用的评估 CSV 文件...")
-
-                    def save_xstest_format(sub_df, out_filename):
-                        # 准备 8 列数据
-                        target_cols = ['id', 'type', 'prompt', 'completion', 'annotation_1', 'annotation_2', 'agreement', 'final_label']
-                        xstest_out = pd.DataFrame()
-
-                        # 映射列
-                        # id
-                        if 'id' in sub_df.columns:
-                            xstest_out['id'] = sub_df['id']
-                        else:
-                            xstest_out['id'] = range(1, len(sub_df) + 1)
-
-                        # type
-                        if 'type' in sub_df.columns:
-                            xstest_out['type'] = sub_df['type']
-                        else:
-                            xstest_out['type'] = 'N/A'
-
-                        # prompt
-                        xstest_out['prompt'] = sub_df['prompt']
-
-                        # completion (即 assistant_output)
-                        xstest_out['completion'] = sub_df['assistant_output']
-
-                        # 占位符列
-                        for col in ['annotation_1', 'annotation_2', 'agreement', 'final_label']:
-                            xstest_out[col] = None
-
-                            # 确保列顺序
-                        xstest_out = xstest_out[target_cols]
-
-                        out_path = output_dir / out_filename
-                        xstest_out.to_csv(out_path, index=False, encoding='utf-8-sig')
-                        logger.info(f"XSTest 格式结果已保存到: {out_path.name}")
-
-                    # 保存 Baseline
-                    df_base = df_utility_subset[df_utility_subset['condition'] == 'baseline']
-                    if not df_base.empty:
-                        save_xstest_format(df_base, f"{llm_name}_xstest_baseline.csv")
-
-                    # 保存 Guarded (JEDI)
-                    df_guard = df_utility_subset[df_utility_subset['condition'] == 'guarded']
-                    if not df_guard.empty:
-                        save_xstest_format(df_guard, f"{llm_name}_xstest_guarded.csv")
-
-            except Exception as e:
-                logger.error(f"保存可用性 (Utility) '{dataset_name}' 结果文件时失败: {e}", exc_info=True)
-    else:
-        logger.info("未找到可用性结果。")
-
-    # --- 计算并保存安全性指标 (ASR) ---
-    # [!] 现有的 'if run_safety:' 检查不是必需的
-    df_safety_results = final_results_df[final_results_df['eval_split'] == 'safety']
-    if not df_safety_results.empty:
-        attack_methods = df_safety_results['attack_method'].unique()
-        logger.info(f"正在为 {len(attack_methods)} 种攻击方法计算 ASR 指标...")
-
-        for method in attack_methods:
-            if pd.isna(method) or method == 'N/A': continue
-
-            df_attack = df_safety_results[df_safety_results['attack_method'] == method]
-            if df_attack.empty: continue
-
-            baseline_asr_metrics = calculate_metrics(df_attack.query("condition == 'baseline'"), condition='baseline')
-            guarded_asr_metrics = calculate_metrics(df_attack.query("condition == 'guarded'"), condition='guarded')
-
-            attack_summary = {
-                f'safety_asr_attack_{method}': {
-                    'baseline': baseline_asr_metrics,
-                    'guarded': guarded_asr_metrics
-                }
-            }
-            logger.info(f"安全性 (ASR) for {method} - Baseline: {baseline_asr_metrics['rate']:.4f}, Guarded: {guarded_asr_metrics['rate']:.4f}")
-
-            try:
-                attack_csv_path = output_dir / f"{llm_name}_evaluation_detailed_attack_{method}.csv"
-                df_attack.to_csv(attack_csv_path, index=False, encoding='utf-8-sig')
-
-                attack_json_path = output_dir / f"{llm_name}_evaluation_summary_attack_{method}.json"
-                with open(attack_json_path, 'w', encoding='utf-8') as f:
-                    json.dump(attack_summary, f, indent=2, default=str)
-
-                logger.info(f"已保存攻击方法 '{method}' 结果到: {attack_csv_path.name} 和 {attack_json_path.name}")
-            except Exception as e:
-                logger.error(f"保存攻击方法 '{method}' 结果文件时失败: {e}", exc_info=True)
-    else:
-        logger.info("未找到安全性结果，跳过 ASR 计算和保存。")
-
-    logger.info("评估流程全部完成。")
-
-    # --- [!] 新增: 自动删除临时文件 ---
-    try:
-        if 'interim_csv_path' in locals() and interim_csv_path.exists():
-            interim_csv_path.unlink()
-            logger.info(f"已清理临时文件: {interim_csv_path.name}")
-    except Exception as e:
-        logger.warning(f"清理临时文件 {interim_csv_path.name} 时失败: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
