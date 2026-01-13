@@ -732,14 +732,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--disable_adaptive",
-        default=True,
+        default=False,
         action="store_true",
         help="禁用自适应反馈，使用原始 PAIR + gpt-5 评分",
     )
 
     parser.add_argument(
         "--proxy",
-        default=os.getenv("OPENAI_PROXY", "http://127.0.0.1:7890"),  # 你也可以改成 CLASH_PROXY 等
+        default=os.getenv("OPENAI_PROXY", ""),  # 你也可以改成 CLASH_PROXY 等
         help="Clash 代理，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891",
     )
 
