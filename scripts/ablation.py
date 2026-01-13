@@ -1004,7 +1004,7 @@ def main():
             df_safety_long = load_safety_dataset(safety_config, data_dir, safety_sample_size)
         else:
             logger.info("根据配置，跳过加载“安全性”数据集。")
-        base_alpha = config.get('base_alpha', guard.alpha)
+        base_alpha = guard.alpha
         base_beta = config.get('base_beta', guard.base_beta)
         alpha_list = normalize_ablation_list('alpha_list', config.get('alpha_list'))
         bata_list = normalize_ablation_list('bata_list', config.get('bata_list'))
@@ -1014,10 +1014,11 @@ def main():
             return
 
         ablation_settings = []
-        for alpha in alpha_list:
+        for alpha_offset in alpha_list:
+            current_alpha = base_alpha + alpha_offset
             ablation_settings.append({
-                'name': format_ablation_tag('alpha', alpha),
-                'alpha': alpha,
+                'name': format_ablation_tag('alpha', current_alpha),
+                'alpha': current_alpha,
                 'beta': base_beta
             })
         for beta in bata_list:
