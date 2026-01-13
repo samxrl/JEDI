@@ -111,13 +111,12 @@ safety_dataset_config:
 
 # --- 4. 评测参数 ---
 # --- 4.1 消融实验参数 ---
-# alpha/beta 消融实验的基准值
-base_alpha: 1.0
-base_beta: 2.0
+# beta 消融实验的基准值
+base_beta: 1.0
 
 # alpha/beta 消融实验的参数列表 (长度为 5 的浮点数列表)
-alpha_list: [0.5, 1.0, 1.5, 2.0, 2.5]
-bata_list: [0.5, 1.0, 1.5, 2.0, 2.5]
+alpha_list: [-10.0, -5.0, 0, 5.0, 10.0]
+bata_list: [-1.0, 0, 1.0, 2.0, 3.0]
 
 # --- 4.2 评测参数 ---
 # 在评测时要生成的 token 数量
@@ -126,7 +125,7 @@ generation_kwargs:
   do_sample: false
 
 # 评测时使用的批量大小。根据显存（VRAM）进行调整。
-batch_size: 1
+batch_size: 12
 # 分类器模型的批量大小 (通常需要更小)
 classifier_batch_size: 1
 # 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
