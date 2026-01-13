@@ -43,7 +43,7 @@ artifact_path: "data/activations"
 # 包含评测数据集的目录
 data_dir: "data/raw" # 假设 jbb_expanded.csv 和良性数据都在这里
 # 保存详细评测结果 (CSV 和 JSON) 的目录
-output_dir: "data/evaluations"
+output_dir: "data/ablation"
 
 # --- 3. 数据集配置 ---
 
@@ -110,6 +110,16 @@ safety_dataset_config:
   max_new_tokens: 256
 
 # --- 4. 评测参数 ---
+# --- 4.1 消融实验参数 ---
+# alpha/beta 消融实验的基准值
+base_alpha: 1.0
+base_beta: 2.0
+
+# alpha/beta 消融实验的参数列表 (长度为 5 的浮点数列表)
+alpha_list: [0.5, 1.0, 1.5, 2.0, 2.5]
+bata_list: [0.5, 1.0, 1.5, 2.0, 2.5]
+
+# --- 4.2 评测参数 ---
 # 在评测时要生成的 token 数量
 generation_kwargs:
   max_new_tokens: 256
