@@ -1007,9 +1007,9 @@ def main():
         base_alpha = guard.alpha
         base_beta = config.get('base_beta', guard.base_beta)
         alpha_list = normalize_ablation_list('alpha_list', config.get('alpha_list'))
-        bata_list = normalize_ablation_list('bata_list', config.get('bata_list'))
+        beta_list = normalize_ablation_list('beta_list', config.get('bata_list'))
 
-        if not alpha_list and not bata_list:
+        if not alpha_list and not beta_list:
             logger.error("未提供任何消融实验参数列表 (alpha_list 或 bata_list)。")
             return
 
@@ -1021,7 +1021,7 @@ def main():
                 'alpha': current_alpha,
                 'beta': base_beta
             })
-        for beta in bata_list:
+        for beta in beta_list:
             ablation_settings.append({
                 'name': format_ablation_tag('beta', beta),
                 'alpha': base_alpha,
