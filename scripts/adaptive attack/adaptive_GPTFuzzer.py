@@ -795,7 +795,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="自适应 GPTFuzzer 攻击脚本")
     parser.add_argument(
         "--model_name_or_path",
-        default="../../../../models/vicuna_7b_v1_5",
+        default="../../../../models/Qwen2_5-7B-Instruct",
         help="被攻击的 LLM 路径",
     )
     parser.add_argument(
@@ -831,6 +831,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument(
         "--disable_adaptive",
+        default=False,
         action="store_true",
         help="禁用自适应攻击，改用 API 模型对种子评分",
     )
