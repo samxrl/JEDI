@@ -831,7 +831,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument(
         "--disable_adaptive",
-        default=False,
+        default=True,
         action="store_true",
         help="禁用自适应攻击，改用 API 模型对种子评分",
     )
@@ -898,8 +898,15 @@ def main():
     output_dir = Path(f"../../data/evaluations/{model_name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prompts_csv = output_dir / "adaptive_gptfuzzer_prompts.csv"
-    logs_csv = output_dir / "adaptive_gptfuzzer_query_logs.csv"
+    # 根据模式动态生成文件名
+    if not args.disable_adaptive:
+        prompts_csv = output_dir / "adaptive_gptfuzzer_prompts.csv"
+        logs_csv = output_dir / "adaptive_gptfuzzer_query_logs.csv"
+    else:
+        prompts_csv = output_dir / "standard_gptfuzzerpair_prompts.csv"
+        logs_csv = output_dir / "standard_gptfuzzerpair_query_logs.csv"
+
+
 
     prompt_fieldnames = ["id", "Goal", "Target", "prompt", "best_output"]
     if not prompts_csv.exists() or prompts_csv.stat().st_size == 0:
