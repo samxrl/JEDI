@@ -565,11 +565,12 @@ def run_full_evaluation(
     llm_name: str,
     current_alpha: float,
     current_beta: float
-) -> None:
+) -> Dict[str, Any]:
     """
     运行一次完整的评测流程，并将结果保存到指定目录。
     """
     all_results_dfs = []  # 存储所有详细的 DF 结果
+    guarded_asr_summary = {"per_method": {}, "average": 0.0}
 
     # ---
     # --- 阶段 1: 生成
@@ -699,7 +700,7 @@ def run_full_evaluation(
 
     if not all_results_dfs:
         logger.error("未生成任何结果。请检查数据集路径和配置。")
-        return
+        return guarded_asr_summary
 
     # ---
     # --- 阶段 2: 分类
@@ -876,6 +877,7 @@ def run_full_evaluation(
         attack_methods = df_safety_results['attack_method'].unique()
         logger.info(f"正在为 {len(attack_methods)} 种攻击方法计算 ASR 指标...")
 
+        guarded_rates = []
         for method in attack_methods:
             if pd.isna(method) or method == 'N/A':
                 continue
@@ -886,6 +888,9 @@ def run_full_evaluation(
 
             baseline_asr_metrics = calculate_metrics(df_attack.query("condition == 'baseline'"), condition='baseline')
             guarded_asr_metrics = calculate_metrics(df_attack.query("condition == 'guarded'"), condition='guarded')
+            guarded_rate = guarded_asr_metrics['rate']
+            guarded_asr_summary["per_method"][method] = guarded_rate
+            guarded_rates.append(guarded_rate)
 
             attack_summary = {
                 f'safety_asr_attack_{method}': {
@@ -906,6 +911,9 @@ def run_full_evaluation(
                 logger.info(f"已保存攻击方法 '{method}' 结果到: {attack_csv_path.name} 和 {attack_json_path.name}")
             except Exception as e:
                 logger.error(f"保存攻击方法 '{method}' 结果文件时失败: {e}", exc_info=True)
+
+        if guarded_rates:
+            guarded_asr_summary["average"] = sum(guarded_rates) / len(guarded_rates)
     else:
         logger.info("未找到安全性结果，跳过 ASR 计算和保存。")
 
@@ -917,6 +925,8 @@ def run_full_evaluation(
             logger.info(f"已清理临时文件: {interim_csv_path.name}")
     except Exception as e:
         logger.warning(f"清理临时文件 {interim_csv_path.name} 时失败: {e}", exc_info=True)
+
+    return guarded_asr_summary
 
 
 def main():
@@ -1028,6 +1038,7 @@ def main():
                 'beta': beta
             })
 
+        ablation_summary_rows = []
         for setting in ablation_settings:
             guard.alpha = setting['alpha']
             guard.base_beta = setting['beta']
@@ -1036,7 +1047,7 @@ def main():
             logger.info(
                 f"=== 开始消融实验: {setting['name']} (alpha={setting['alpha']}, beta={setting['beta']}) ==="
             )
-            run_full_evaluation(
+            guarded_asr_summary = run_full_evaluation(
                 guard=guard,
                 model=model,
                 tokenizer=tokenizer,
@@ -1053,6 +1064,24 @@ def main():
                 current_alpha=setting['alpha'],
                 current_beta=setting['beta']
             )
+            if run_safety and guarded_asr_summary["per_method"]:
+                params_label = f"alpha={setting['alpha']:g}, beta={setting['beta']:g}"
+                row = {"params": params_label}
+                row.update(guarded_asr_summary["per_method"])
+                row["average_asr"] = guarded_asr_summary["average"]
+                ablation_summary_rows.append(row)
+
+        if run_safety and ablation_summary_rows:
+            attack_methods = df_safety_long['attack_method'].dropna().unique().tolist()
+            summary_df = pd.DataFrame(ablation_summary_rows)
+            method_columns = [m for m in attack_methods if m in summary_df.columns]
+            ordered_columns = ["params"] + method_columns + ["average_asr"]
+            summary_df = summary_df.reindex(columns=ordered_columns)
+            summary_csv_path = output_base_dir / f"{llm_name}_ablation_guarded_asr_summary.csv"
+            summary_df.to_csv(summary_csv_path, index=False, encoding='utf-8-sig')
+            logger.info(f"消融实验 Guarded ASR 汇总已保存到: {summary_csv_path.name}")
+        elif run_safety:
+            logger.info("未生成 Guarded ASR 汇总数据，跳过汇总 CSV 保存。")
 
     finally:
         # --- 关键步骤: 释放被测 LLM ---
