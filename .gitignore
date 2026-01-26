@@ -12,6 +12,9 @@ data/raw/*
 data/processed/*
 data/activations/*
 data/evaluations/*
+data/ablation/*
+
+
 
 Kernel Density Simulation Visualization.py
 
@@ -24,3 +27,5 @@ PROJECT_STRUCTURE.md
 方法流程.md
 
 #sample_jailbreaks.py
+scripts/adaptive_evaluation.py
+configs/adaptive_evaluation_config.yaml

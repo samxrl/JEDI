@@ -682,7 +682,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="自适应 PAIR 攻击脚本")
     parser.add_argument(
         "--model_name_or_path",
-        default="../../../../models/Qwen2_5-7B-Instruct",
+        default="../../../../models/vicuna_7b_v1_5",
         help="被攻击的 LLM 路径",
     )
     parser.add_argument(

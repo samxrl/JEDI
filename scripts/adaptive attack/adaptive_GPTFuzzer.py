@@ -795,7 +795,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="自适应 GPTFuzzer 攻击脚本")
     parser.add_argument(
         "--model_name_or_path",
-        default="../../../../models/Qwen2_5-7B-Instruct",
+        default="../../../../models/vicuna_7b_v1_5",
         help="被攻击的 LLM 路径",
     )
     parser.add_argument(
@@ -903,8 +903,8 @@ def main():
         prompts_csv = output_dir / "adaptive_gptfuzzer_prompts.csv"
         logs_csv = output_dir / "adaptive_gptfuzzer_query_logs.csv"
     else:
-        prompts_csv = output_dir / "standard_gptfuzzerpair_prompts.csv"
-        logs_csv = output_dir / "standard_gptfuzzerpair_query_logs.csv"
+        prompts_csv = output_dir / "standard_gptfuzzer_prompts.csv"
+        logs_csv = output_dir / "standard_gptfuzzer_query_logs.csv"
 
 
 
