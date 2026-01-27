@@ -1,39 +1,38 @@
 # JEDI/configs/data_prep_config.yaml
 #
-# 用于 01_prepare_datasets.py 脚本的配置文件。
-# 请根据你的实际文件路径和需求进行修改。
-# 所有路径都是相对于项目根目录 (JEDI/) 的。
+# Configuration file for the 01_prepare_datasets.py script.
+# Please edit according to your file paths and requirements.
+# All paths are relative to the project root (JEDI/).
 
-# 指定处理后文件的输出目录
+# Output directory for processed files.
 output_dir: data/processed
 
-# LLM名称
+# LLM name
 #llm_name: vicuna_7b_v1_5
 llm_name: Qwen2_5-7B-Instruct
 
-# 越狱数据集配置
+# Jailbreak dataset configuration
 jailbreak_dataset:
-  # 相对于项目根目录的输入文件路径
+  # Input file path relative to the project root
   # input_file: data/raw/vicuna_7b_v1_5_sampled_jailbreaks.json
   input_file: data/raw/qwen_7b_chat_sampled_jailbreaks.json
 
 
-# 良性数据集配置 (可选)
+# Benign dataset configuration (optional)
 benign_dataset:
-  sample_size: 100  # 从良性数据集中采样的样本数量
+  sample_size: 100  # Number of samples to draw from the benign dataset
   input_files:
    # - data/raw/or-bench-80k.csv
     - data/raw/justeval.jsonl
 
-# 用于生成 A1 和 A2 样本的前缀列表
+# Prefix list used to generate A1 and A2 samples
 prefixes:
-  # 指定前缀的来源文件。这使得前缀列表更易于管理和扩展。
-  # 来源: https://github.com/IBM/activation-steering/blob/main/docs/demo-data/behavior_refusal.json
+  # Source file for prefixes. This makes the prefix list easier to manage and extend.
+  # Source: https://github.com/IBM/activation-steering/blob/main/docs/demo-data/behavior_refusal.json
   source_file: data/raw/behavior_refusal.json
 
-  # 'source_file' 中用于满足型(A1)前缀的 JSON 键
+  # JSON key in 'source_file' for compliant (A1) prefixes
   compliance_key: "compliant_responses"
 
-  # 'source_file' 中用于拒绝型(A2)前缀的 JSON 键
+  # JSON key in 'source_file' for refusal (A2) prefixes
   refusal_key: "non_compliant_responses"
-
