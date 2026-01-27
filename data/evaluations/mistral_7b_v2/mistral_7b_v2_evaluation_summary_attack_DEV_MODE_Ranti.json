@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_DEV_MODE_Ranti": {
+    "baseline": {
+      "ASR": 0.79,
+      "total": 100,
+      "harmful_count": 79
+    },
+    "guarded": {
+      "ASR": 0.0,
+      "total": 100,
+      "harmful_count": 0,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

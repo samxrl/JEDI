@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_prompt_with_random_search": {
+    "baseline": {
+      "ASR": 0.94,
+      "total": 100,
+      "harmful_count": 94
+    },
+    "guarded": {
+      "ASR": 0.01,
+      "total": 100,
+      "harmful_count": 1,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_GCG": {
+    "baseline": {
+      "rate": 0.04,
+      "total": 100,
+      "harmful_count": 4
+    },
+    "guarded": {
+      "rate": 0.0,
+      "total": 100,
+      "harmful_count": 0,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

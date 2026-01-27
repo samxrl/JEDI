@@ -11,8 +11,8 @@ __pycache__/
 data/raw/*
 data/processed/*
 data/activations/*
-data/evaluations/*
 data/ablation/*
+data/evaluations/plot Guarded Trigger Steps Boxplot.py
 
 
 

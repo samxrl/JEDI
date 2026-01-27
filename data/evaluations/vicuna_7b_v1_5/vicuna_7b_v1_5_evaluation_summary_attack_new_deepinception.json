@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_new_deepinception": {
+    "baseline": {
+      "ASR": 0.16,
+      "total": 100,
+      "harmful_count": 16
+    },
+    "guarded": {
+      "ASR": 0.02,
+      "total": 100,
+      "harmful_count": 2,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

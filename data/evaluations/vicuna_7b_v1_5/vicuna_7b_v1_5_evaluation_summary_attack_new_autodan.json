@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_new_autodan": {
+    "baseline": {
+      "ASR": 0.45,
+      "total": 100,
+      "harmful_count": 45
+    },
+    "guarded": {
+      "ASR": 0.01,
+      "total": 100,
+      "harmful_count": 1,
+      "trigger_rate": 0.96,
+      "trigger_count": 96
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_new_renellm": {
+    "baseline": {
+      "ASR": 0.41,
+      "total": 100,
+      "harmful_count": 41
+    },
+    "guarded": {
+      "ASR": 0.04,
+      "total": 100,
+      "harmful_count": 4,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_new_tap": {
+    "baseline": {
+      "ASR": 0.37,
+      "total": 100,
+      "harmful_count": 37
+    },
+    "guarded": {
+      "ASR": 0.12,
+      "total": 100,
+      "harmful_count": 12,
+      "trigger_rate": 1.0,
+      "trigger_count": 100
+    }
+  }
+}

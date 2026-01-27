@@ -1,0 +1,16 @@
+{
+  "safety_asr_attack_PAIR": {
+    "baseline": {
+      "ASR": 0.47,
+      "total": 100,
+      "harmful_count": 47
+    },
+    "guarded": {
+      "ASR": 0.07,
+      "total": 100,
+      "harmful_count": 7,
+      "trigger_rate": 0.96,
+      "trigger_count": 96
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "utility_fpr_alpaca_eval": {
+    "baseline": {
+      "rate": 0.0,
+      "total": 10,
+      "harmful_count": 0
+    },
+    "guarded": {
+      "rate": 0.0,
+      "total": 10,
+      "harmful_count": 0,
+      "trigger_rate": 0.9,
+      "trigger_count": 9
+    }
+  }
+}
