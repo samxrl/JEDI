@@ -1,65 +1,65 @@
 # JEDI/configs/extraction_config.yaml
 #
-# 02_extract_activations.py 脚本的配置文件。
-# 该文件指定了要使用的模型、要处理的数据以及如何提取隐藏状态激活。
+# Configuration file for the 02_extract_activations.py script.
+# This file specifies which model to use, what data to process, and how to extract hidden-state activations.
 
-# 此项必须与 data_prep_config.yaml 中使用的 'llm_name' 匹配，以找到正确的输入文件。
+# This must match the 'llm_name' used in data_prep_config.yaml to locate the correct input files.
 #dataset_llm_name: "vicuna_7b_v1_5"
 dataset_llm_name: "mistral_7b_v2"
 
-# 用于加载以提取激活的 Hugging Face 模型标识符。
-# 理想情况下，这应与 `dataset_llm_name` 是同一个模型。
+# Hugging Face model identifier to load for activation extraction.
+# Ideally, this should be the same model as `dataset_llm_name`.
 #model_name: "../../../models/vicuna_7b_v1_5"
 model_name: "../../../models/mistral_7b_v2"
 
 model_kwargs:
-  # 使用 "auto" 自动选择最佳数据类型（例如，在 Ampere 架构上为 bfloat16）。
-  # 在较旧的 GPU 上使用 "torch.float16" 以节省内存。
+  # Use "auto" to automatically select the best dtype (e.g., bfloat16 on Ampere GPUs).
+  # Use "torch.float16" on older GPUs to save memory.
   torch_dtype: "bfloat16"
   trust_remote_code: True
   load_in_8bit: False
 
-# --- 路径（相对于项目根目录 JEDI/）---
-# 脚本 01 处理后的数据集所在的目录。
+# --- Paths (relative to project root JEDI/) ---
+# Directory containing datasets processed by script 01.
 processed_data_dir: "data/processed"
-# 输出激活文件 (.pt) 将被保存的目录。
+# Directory where activation files (.pt) will be saved.
 output_dir: "data/activations"
 
-# --- 提取参数 ---
-# 定义要目标化的层以及如何处理它们的激活。
+# --- Extraction parameters ---
+# Define target layers and how to process their activations.
 extraction:
-  # 要提取隐藏状态的层索引列表。
-  # 注意：第 0 层是嵌入层。对于 LLaMA 风格的模型，
-  # transformer 块（解码器层）通常编号为 1 到 N。
-  # 最后一层归一化通常是 LM 头之前的最后一层。
-  # 32 层 LLaMA 模型的示例：
+  # List of layer indices to extract hidden states from.
+  # Note: Layer 0 is the embedding layer. For LLaMA-style models,
+  # transformer blocks (decoder layers) are typically numbered 1 to N.
+  # The final layer norm is usually the last layer before the LM head.
+  # Example for a 32-layer LLaMA model:
   layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
 
-  # 将窗口内的 token 表示聚合成单个向量的方法。
-  # 选项：
-  #   "mean": 对窗口中所有 token 的隐藏状态取平均值。
-  #   "last": 仅使用窗口中最后一个 token 的隐藏状态。
+  # Method to aggregate token representations within the window into a single vector.
+  # Options:
+  #   "mean": Average hidden states of all tokens in the window.
+  #   "last": Use only the last token's hidden state in the window.
   aggregation: "mean"
 
-  # 当 aggregation 为 "mean" 时，只使用窗口的前 k 个 token 计算平均值。
-  # 这对于内容窗口特别有用，可以只关注生成的起始部分。
-  # 设置为 0 或 null 表示使用所有 token。
+  # When aggregation is "mean", only use the first k tokens in the window for the average.
+  # This is useful for content windows when you want to focus on the beginning of the generation.
+  # Set to 0 or null to use all tokens.
   mean_k: 0
 
-# --- 生成参数 ---
-# 控制“内容窗口” (W_cont) 的生成。
+# --- Generation parameters ---
+# Controls generation of the "content window" (W_cont).
 generation:
-  # 在初始提示/前缀之后要生成的新 token 数量。
-  # 这会创建用于提取有害信号的内容窗口。
+  # Number of new tokens to generate after the initial prompt/prefix.
+  # This creates the content window used to extract harmful signals.
   max_new_tokens: 128
 
-# --- 处理参数 ---
-# 通用操作设置。
+# --- Processing parameters ---
+# General runtime settings.
 processing:
-  # 通过模型处理样本的批量大小。根据显存（VRAM）进行调整。
+  # Batch size for processing samples through the model. Adjust based on VRAM.
   batch_size: 6
-  # 运行模型的设备。例如："cuda:0"、"cpu"。
+  # Device to run the model on. Example: "cuda:0", "cpu".
   device: "cuda"
-  # 对每个数据集随机采样的样本数量，用于快速验证。
-  # 设置为 null 或 0 来使用完整数据集。
+  # Number of samples to randomly subsample per dataset for quick validation.
+  # Set to null or 0 to use the full dataset.
   sample_size: 0

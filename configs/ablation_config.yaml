@@ -1,23 +1,23 @@
 # JEDI/configs/evaluation_config.yaml
 #
-# scripts/run_evaluation.py 脚本的配置文件。
-# 用于评估 JEDI 防御系统在“安全性”和“可用性”方面的表现。
+# Configuration file for scripts/run_evaluation.py.
+# Used to evaluate the JEDI defense system on both safety and utility.
 
-# 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配
-# 这用于在 `artifact_path` 中定位正确的防御产物子目录
+# Must match the `llm_name` used in 04_calibrate_defense.py
+# This is used to locate the correct defense artifact subdirectory in `artifact_path`.
 llm_name: "vicuna_7b_v1_5"
 #llm_name: "mistral_7b_v2"
 #llm_name: "Qwen2_5-7B-Instruct"
 
 
-# ---评测流程控制 ---
-# 控制是否运行“可用性”(良性)数据集的评测 (FPR)
+# --- Evaluation flow control ---
+# Whether to run the utility (benign) dataset evaluation (FPR).
 run_utility_evaluation: true
-# 控制是否运行“安全性”(有害)数据集的评测 (ASR)
+# Whether to run the safety (harmful) dataset evaluation (ASR).
 run_safety_evaluation: true
 
-# --- 1. 模型路径 ---
-# 要被评估（和保护）的基础 LLM
+# --- 1. Model paths ---
+# Base LLM to evaluate (and protect).
 llm_config:
   path: "../../../models/vicuna_7b_v1_5"
 #  path: "../../../models/Qwen2_5-7B-Instruct"
@@ -25,9 +25,9 @@ llm_config:
   kwargs:
     torch_dtype: "bfloat16"
     trust_remote_code: True
-    device_map: "auto" # 推荐使用以自动分配 GPU
+    device_map: "auto" # Recommended for automatic GPU placement.
 
-# 用于判断“有害性”的分类器模型
+# Classifier model used to judge harmfulness.
 classifier_config:
   path: "../../../models/HarmBench-Llama-2-13b-cls"
   kwargs:
@@ -35,33 +35,33 @@ classifier_config:
     trust_remote_code: True
     device_map: "auto"
 
-# --- 2. 产物和数据路径 (相对于项目根目录 JEDI/) ---
-# 包含 `defense_params.yaml` 等产物的目录
+# --- 2. Artifacts and data paths (relative to project root JEDI/) ---
+# Directory containing artifacts such as `defense_params.yaml`.
 artifact_path: "data/activations"
-# 包含评测数据集的目录
-data_dir: "data/raw" # 假设 jbb_expanded.csv 和良性数据都在这里
-# 保存详细评测结果 (CSV 和 JSON) 的目录
+# Directory containing evaluation datasets.
+data_dir: "data/raw" # Assumes jbb_expanded.csv and benign data live here.
+# Directory to save detailed evaluation results (CSV and JSON).
 output_dir: "data/ablation"
 
-# --- 3. 数据集配置 ---
+# --- 3. Dataset configuration ---
 
-# 用于评估“可用性”的新配置结构
+# New config structure for utility evaluation.
 utility_dataset_config:
-  # 应用于所有良性数据集的 *总* 采样大小 (0 表示全部)
-  # 脚本将尝试从下面的数据集中等额抽取，直到达到此总数。
+  # Total sample size applied across all benign datasets (0 means all).
+  # The script will attempt to draw equally from datasets below until reaching this total.
   sample_size: 0
 
-  # 定义一个或多个要加载的良性数据集
+  # Define one or more benign datasets to load.
   datasets:
-#    - name: "benign_behaviors" # 用于保存结果的文件名后缀
-#      filename: "benign-behaviors.csv" # 确保在 data_dir 中存在
-#      prompt_column: "Goal" # 良性数据集中的提示列名
+#    - name: "benign_behaviors" # Suffix for output filenames.
+#      filename: "benign-behaviors.csv" # Must exist in data_dir.
+#      prompt_column: "Goal" # Prompt column name in the benign dataset.
 
-#    - name: "or_bench" # 第二个数据集的示例
-#      filename: "or-bench-80k.csv" # 确保在 data_dir 中存在
-#      prompt_column: "prompt" # 此文件的提示列名
+#    - name: "or_bench" # Example of a second dataset.
+#      filename: "or-bench-80k.csv" # Must exist in data_dir.
+#      prompt_column: "prompt" # Prompt column name in this file.
 
-    # 您可以在此处添加更多数据集...
+    # You can add more datasets here...
     - name: "alpaca_eval"
       filename: "alpaca_eval.json"
       prompt_column: "instruction"
@@ -72,12 +72,12 @@ utility_dataset_config:
       prompt_column: "prompt"
       max_new_tokens: 512
 
-# 用于评估“安全性”
+# Used to evaluate safety.
 safety_dataset_config:
-  # jbb_expanded.csv 文件的名称
+  # Name of the jbb_expanded.csv file.
   filename: "jbb_expanded.csv"
 
-  # CSV 中描述样本的基础列
+  # Base columns describing each sample in the CSV.
   base_columns:
     - "Index"
     - "Goal"
@@ -86,8 +86,8 @@ safety_dataset_config:
     - "Category"
     - "Source"
 
-  # 【关键】指定要从 jbb_expanded.csv 中评估哪些攻击列
-  # 脚本将为列表中的每个列名分别计算 ASR
+  # [Key] Specify which attack columns to evaluate from jbb_expanded.csv.
+  # The script computes ASR for each column name in this list.
   attack_columns_to_eval:
     - "PAIR"
     - "GCG"
@@ -102,29 +102,29 @@ safety_dataset_config:
     - "AIM"
 
 
-  # 安全性数据集的采样大小 (0 表示全部)
+  # Sample size for the safety dataset (0 means all).
   sample_size: 0
-  # 安全性数据集生成时的 max_new_tokens (未设置则使用 generation_kwargs.max_new_tokens)
+  # max_new_tokens used for safety dataset generation (defaults to generation_kwargs.max_new_tokens if unset).
   max_new_tokens: 256
 
-# --- 4. 评测参数 ---
-# --- 4.1 消融实验参数 ---
-# beta 消融实验的基准值
+# --- 4. Evaluation parameters ---
+# --- 4.1 Ablation parameters ---
+# Baseline value for beta ablation.
 base_beta: 1.0
 
-# alpha/beta 消融实验的参数列表 (长度为 5 的浮点数列表)
+# Parameter lists for alpha/beta ablation (length-5 float lists).
 alpha_list: [-10.0, -5.0, 0, 5.0, 10.0]
 beta_list: [0.25, 0.5, 1.0, 1.5, 2.0]
 
-# --- 4.2 评测参数 ---
-# 在评测时要生成的 token 数量
+# --- 4.2 Evaluation parameters ---
+# Number of tokens to generate during evaluation.
 generation_kwargs:
   max_new_tokens: 256
   do_sample: false
 
-# 评测时使用的批量大小。根据显存（VRAM）进行调整。
+# Batch size for evaluation. Adjust based on VRAM.
 batch_size: 12
-# 分类器模型的批量大小 (通常需要更小)
+# Batch size for the classifier model (usually smaller).
 classifier_batch_size: 1
-# 运行模型的设备 (如果 llm_config.kwargs 中未使用 device_map)
+# Device to run the model on (if device_map is not used in llm_config.kwargs).
 device: "cuda"
