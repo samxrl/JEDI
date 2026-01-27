@@ -3,7 +3,6 @@
 # scripts/run_evaluation.py 脚本的配置文件。
 # 用于评估 JEDI 防御系统在“安全性”和“可用性”方面的表现。
 #
-# [!] 此文件已更新，以支持多个良性数据集。
 
 # 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配
 # 这用于在 `artifact_path` 中定位正确的防御产物子目录
@@ -12,7 +11,7 @@ llm_name: "vicuna_7b_v1_5"
 #llm_name: "Qwen2_5-7B-Instruct"
 
 
-# --- [新增] 评测流程控制 ---
+# --- 评测流程控制 ---
 # 控制是否运行“可用性”(良性)数据集的评测 (FPR)
 run_utility_evaluation: true
 # 控制是否运行“安全性”(有害)数据集的评测 (ASR)
@@ -106,7 +105,7 @@ safety_dataset_config:
 
   # 安全性数据集的采样大小 (0 表示全部)
   sample_size: 0
-  # [新增] 安全性数据集生成时的 max_new_tokens (未设置则使用 generation_kwargs.max_new_tokens)
+  # 安全性数据集生成时的 max_new_tokens (未设置则使用 generation_kwargs.max_new_tokens)
   max_new_tokens: 256
 
 # --- 4. 评测参数 ---

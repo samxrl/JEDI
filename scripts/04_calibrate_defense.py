@@ -22,12 +22,12 @@
     - 在 `(kappa, alpha)` 参数网格上进行搜索。
     - 对每个参数对，在 B1 和 A1 数据集上模拟 CUSUM 过程，计算误报率 (FPR) 和平均检测延迟。
     - 找到在满足目标误报率约束下，具有最低检测延迟的最佳 `(kappa, alpha)` 对。
-    - **[!] 优化**: 使用多进程并行处理网格搜索，加快校准速度。
-    - **[!] 修复**: 将数据转换为 Numpy 格式传递给子进程，解决 "Too many open files" 错误。
+    - ** 优化**: 使用多进程并行处理网格搜索，加快校准速度。
+    - ** 修复**: 将数据转换为 Numpy 格式传递给子进程，解决 "Too many open files" 错误。
 5.  **保存防御参数**:
     - 将所有校准得到的参数 (最优层、theta、kappa、alpha、以及对应的向量和变换) 保存到一个文件中，
       以供在线防御系统使用。
-    - [!] 新增: 将网格搜索的详细结果保存为 CSV 表格。
+    -  新增: 将网格搜索的详细结果保存为 CSV 表格。
 
 如何运行:
 python scripts/04_calibrate_defense.py --config configs/calibration_config.yaml
@@ -139,7 +139,7 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, alpha):
     """
     模拟 CUSUM 过程以计算触发率和延迟。
 
-    [!] 修改：支持 Numpy 数组输入，以避免多进程中的文件描述符耗尽问题。
+     修改：支持 Numpy 数组输入，以避免多进程中的文件描述符耗尽问题。
     """
     num_sequences = len(score_sequences)
     if num_sequences == 0: return 0.0, 0.0
@@ -148,7 +148,7 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, alpha):
     total_delay = 0
 
     for scores in score_sequences:
-        # [!] 兼容处理：检查是 Tensor 还是 Numpy
+        #  兼容处理：检查是 Tensor 还是 Numpy
         if isinstance(scores, torch.Tensor):
             if scores.numel() == 0: continue
             scores_np = scores.numpy()
@@ -157,7 +157,7 @@ def simulate_cusum(score_sequences, theta, benign_r_mean, kappa, alpha):
             if scores.size == 0: continue
             scores_np = scores
 
-        # [!] 使用 Numpy 进行计算 (np.maximum 替代 torch.clamp)
+        #  使用 Numpy 进行计算 (np.maximum 替代 torch.clamp)
         r = np.maximum(scores_np - theta, 0)
 
         A = 0.0
@@ -217,7 +217,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
 
     logging.info(f"启动多进程网格搜索 (Processes: {num_processes}, Total Points: {len(param_grid)})...")
 
-    # --- [!] 关键修改：转换为 Numpy 列表 ---
+    # ---  关键修改：转换为 Numpy 列表 ---
     # PyTorch Tensor 在多进程传递时会使用文件描述符（共享内存），大量小 Tensor 会耗尽句柄。
     # Numpy Array 使用 Pickle 序列化，无此问题。
     logging.info("正在将数据转换为 Numpy 格式以避免 'Too many open files' 错误...")
@@ -249,7 +249,7 @@ def calibrate_cusum(harmful_sequences, benign_sequences, theta, grid_config):
         logging.warning(f"没有参数组合满足 FPR <= {grid_config['target_fpr']} 的约束。将选择 FPR 最低的组合。")
         best_params = results_df.sort_values(by=['fpr', 'delay']).iloc[0]
     else:
-        # [!] 修改：使用加权多目标优化选择最佳参数
+        #  修改：使用加权多目标优化选择最佳参数
         # Score = TPR + alpha * (1 / (Delay + 1))
         # alpha 由配置文件中的 delay_weight 指定，默认为 0.1
         alpha = grid_config.get('delay_weight', 0.1)
@@ -352,7 +352,7 @@ def main():
         yaml.dump(defense_params, f, indent=2, allow_unicode=True, sort_keys=False)
     logging.info(f"防御参数已成功校准并保存到: {save_path}")
 
-    # 8b. [!] 保存网格搜索结果到 CSV
+    # 8b.  保存网格搜索结果到 CSV
     grid_results_path = output_dir / "cusum_grid_search_results.csv"
     grid_search_results_df.to_csv(grid_results_path, index=False, encoding='utf-8-sig')
     logging.info(f"CUSUM 网格搜索详细结果已保存到: {grid_results_path}")

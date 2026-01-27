@@ -5,7 +5,7 @@
 该脚本是 JEDI 流程的最后一步，用于验证 `04_calibrate_defense.py`
 校准后的防御系统的实际效果。
 
-** [!] 此版本已根据内存优化请求进行修改 **
+**  此版本已根据内存优化请求进行修改 **
 流程被分为三个阶段，以确保被测 LLM 和分类器 LLM 不会同时占用显存：
 1.  **阶段 1 (生成)**: 加载被测 LLM，运行所有生成 (baseline + guarded)，
     保存结果，然后释放被测 LLM。
@@ -13,18 +13,18 @@
     保存标签，然后释放分类器 LLM。
 3.  **阶段 3 (报告)**: 计算所有指标并保存到文件。
 
-** [!] 此版本已修改，支持加载和评估多个良性数据集。 **
+**  此版本已修改，支持加载和评估多个良性数据集。 **
 1.  `load_utility_dataset` 现在从配置中加载一个数据集列表，支持 CSV 和 JSON。
 2.  实现了基于配额的等额采样逻辑。
 3.  评估和保存阶段现在会为每个良性数据集分别生成报告。
 4.  **新增**: 特别支持 `alpaca_eval` 格式输出。
 5.  **新增**: 特别支持 `xstest` (xstest_prompts.csv) 格式输出 (8列 CSV)。
 
-** [!] 此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
+**  此版本已修改，支持通过配置控制是否运行可用性/安全性评测。 **
 1.  新增 `run_utility_evaluation` 和 `run_safety_evaluation` 配置项。
 2.  根据配置项条件性地加载数据集和执行评测。
 
-** [!] 修改：在测试 utility 数据集时，添加了耗时统计。 **
+**  修改：在测试 utility 数据集时，添加了耗时统计。 **
 """
 
 import argparse
@@ -38,7 +38,7 @@ import gc
 import sys
 import json
 import contextlib
-import time  # [!] 新增：导入 time 模块用于计时
+import time  #  新增：导入 time 模块用于计时
 from typing import Dict, List, Any, Optional, Tuple
 import importlib.util
 
@@ -140,7 +140,7 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
             continue
 
         try:
-            # [!] 新增：支持 JSON 格式 (特别是 alpaca_eval)
+            #  新增：支持 JSON 格式 (特别是 alpaca_eval)
             if filename.lower().endswith('.json'):
                 logger.info(f"检测到 JSON 文件: {filename}，正在加载...")
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -167,7 +167,7 @@ def load_utility_dataset(config: dict, data_dir: Path, total_sample_size: int = 
                     continue
                 df.rename(columns={prompt_col: 'prompt'}, inplace=True)
 
-            # [!] 关键：添加数据集名称
+            #  关键：添加数据集名称
             df['utility_dataset_name'] = name
             df['max_new_tokens'] = max_new_tokens
 
@@ -259,7 +259,7 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
     """
     加载并转换“安全性”(JBB)评估数据集 (从宽表到长表)。
     """
-    # [!] 修改：预先检查攻击列配置
+    #  修改：预先检查攻击列配置
     # 如果 attack_columns_to_eval 为 None 或空，直接跳过加载，防止后续报错
     attack_cols = config.get('attack_columns_to_eval')
     if not attack_cols:
@@ -313,7 +313,7 @@ def load_safety_dataset(config: dict, data_dir: Path, sample_size: int = 0) -> p
     if 'ContextString' not in df_long.columns:
         df_long['ContextString'] = ""
 
-    # [!] 添加占位符，以便与良性数据集合并
+    #  添加占位符，以便与良性数据集合并
     df_long['utility_dataset_name'] = 'N/A'
     df_long['max_new_tokens'] = max_new_tokens
 
@@ -461,14 +461,14 @@ def calculate_metrics(df: pd.DataFrame, condition: str) -> Dict[str, Any]:
     total = len(df)
     if total == 0:
         metrics = {"rate": 0.0, "total": 0, "harmful_count": 0}
-        # [!] 只有 guarded 才添加触发字段
+        #  只有 guarded 才添加触发字段
         if condition == 'guarded':
             metrics["trigger_rate"] = 0.0
             metrics["trigger_count"] = 0
         return metrics
 
     # 1. 计算有害率 (ASR / FPR)
-    # [!] 注意：如果未运行分类，label 列将为 pd.NA 或 'skipped'
+    #  注意：如果未运行分类，label 列将为 pd.NA 或 'skipped'
     # 这种情况下，harmful_count 将为 0，rate 为 0.0
     harmful_count = (df['label'] == 'yes').sum()
     rate = harmful_count / total if total > 0 else 0.0
@@ -596,8 +596,8 @@ def main():
         gen_config.eos_token_id = tokenizer.eos_token_id
 
         # --- 7. 加载数据集 ---
-        # [!] 修改：根据 run_utility 标志条件性加载
-        df_utility_all = pd.DataFrame()  # [!] 初始化为空
+        #  修改：根据 run_utility 标志条件性加载
+        df_utility_all = pd.DataFrame()  #  初始化为空
         if run_utility:
             logger.info("正在加载“可用性”数据集...")
             utility_config = config['utility_dataset_config']
@@ -606,8 +606,8 @@ def main():
         else:
             logger.info("根据配置，跳过加载“可用性”数据集。")
 
-        # [!] 修改：根据 run_safety 标志条件性加载
-        df_safety_long = pd.DataFrame()  # [!] 初始化为空
+        #  修改：根据 run_safety 标志条件性加载
+        df_safety_long = pd.DataFrame()  #  初始化为空
         if run_safety:
             logger.info("正在加载“安全性”数据集...")
             safety_config = config['safety_dataset_config']
@@ -617,8 +617,8 @@ def main():
             logger.info("根据配置，跳过加载“安全性”数据集。")
 
         # --- 8a. 评估可用性 (FPR) ---
-        # [!] 修改：按良性数据集名称循环
-        # [!] 现有的 'if not df_utility_all.empty:' 检查已足够，
+        #  修改：按良性数据集名称循环
+        #  现有的 'if not df_utility_all.empty:' 检查已足够，
         # 因为如果 run_utility=False, df_utility_all 将保持为空。
         if not df_utility_all.empty:
             utility_dataset_names = df_utility_all['utility_dataset_name'].unique()
@@ -637,7 +637,7 @@ def main():
                     continue
 
                 # Guarded
-                # [!] 添加计时统计
+                #  添加计时统计
                 start_time = time.time()
                 guarded_outputs, guarded_triggers = run_generation(
                     model, tokenizer, prompts, dataset_gen_config, batch_size, guard=guard
@@ -651,7 +651,7 @@ def main():
                 df_guarded['assistant_output'] = guarded_outputs
                 df_guarded['trigger_step'] = guarded_triggers
                 df_guarded['condition'] = 'guarded'
-                df_guarded['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
+                df_guarded['eval_split'] = 'utility'  #  重命名: 防止覆盖原始 'dataset' 字段
                 all_results_dfs.append(df_guarded)
 
                 del guarded_outputs, guarded_triggers, df_guarded
@@ -672,7 +672,7 @@ def main():
                 df_baseline['assistant_output'] = baseline_outputs
                 df_baseline['trigger_step'] = baseline_triggers
                 df_baseline['condition'] = 'baseline'
-                df_baseline['eval_split'] = 'utility'  # [!] 重命名: 防止覆盖原始 'dataset' 字段
+                df_baseline['eval_split'] = 'utility'  #  重命名: 防止覆盖原始 'dataset' 字段
                 # 'attack_method' 和 'utility_dataset_name' 已在加载时设置
                 all_results_dfs.append(df_baseline)
 
@@ -685,7 +685,7 @@ def main():
             logger.warning("跳过可用性评估，因为数据集为空或配置为跳过。")
 
         # --- 8b. 评估安全性 (ASR)，按攻击方法分组 ---
-        # [!] 现有的 'if not df_safety_long.empty:' 检查已足够，
+        #  现有的 'if not df_safety_long.empty:' 检查已足够，
         # 因为如果 run_safety=False, df_safety_long 将保持为空。
         if not df_safety_long.empty:
             attack_methods = df_safety_long['attack_method'].unique()
@@ -710,7 +710,7 @@ def main():
                 df_baseline['assistant_output'] = baseline_outputs
                 df_baseline['trigger_step'] = baseline_triggers
                 df_baseline['condition'] = 'baseline'
-                df_baseline['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
+                df_baseline['eval_split'] = 'safety'  #  重命名: 统一使用 eval_split
                 all_results_dfs.append(df_baseline)
 
                 del df_baseline, baseline_outputs, baseline_triggers
@@ -725,7 +725,7 @@ def main():
                 df_guarded['assistant_output'] = guarded_outputs
                 df_guarded['trigger_step'] = guarded_triggers
                 df_guarded['condition'] = 'guarded'
-                df_guarded['eval_split'] = 'safety'  # [!] 重命名: 统一使用 eval_split
+                df_guarded['eval_split'] = 'safety'  #  重命名: 统一使用 eval_split
                 all_results_dfs.append(df_guarded)
 
                 del df_guarded, guarded_outputs, guarded_triggers
@@ -793,7 +793,7 @@ def main():
         logger.warning(f"保存 CSV 文件失败: {e}", exc_info=True)
 
     try:
-        # [!] 修改：分离需要分类的数据 (Safety) 和不需要分类的数据 (Utility)
+        #  修改：分离需要分类的数据 (Safety) 和不需要分类的数据 (Utility)
         mask_safety = final_results_df['eval_split'] == 'safety'
         df_to_classify = final_results_df[mask_safety].copy()
 
@@ -842,8 +842,8 @@ def main():
 
     logger.info("--- 阶段 3: 计算指标并保存拆分报告 ---")
 
-    # --- [!] 修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
-    # [!] 现有的 'if run_utility:' 检查不是必需的，
+    # ---  修改：计算并保存可用性指标 (FPR)，按数据集名称循环 ---
+    #  现有的 'if run_utility:' 检查不是必需的，
     # 因为如果 run_utility=False, 'utility' 数据集将不存在于 final_results_df 中
     df_utility_results = final_results_df[final_results_df['eval_split'] == 'utility']
     if not df_utility_results.empty:
@@ -858,10 +858,10 @@ def main():
             df_utility_subset = df_utility_results[df_utility_results['utility_dataset_name'] == dataset_name]
             if df_utility_subset.empty: continue
 
-            # [!] 修改：不再计算 FPR，因为 label 缺失或 N/A
+            #  修改：不再计算 FPR，因为 label 缺失或 N/A
             logger.info(f"正在保存可用性 (Utility) '{dataset_name}' 的结果文件 (CSV)...")
 
-            # [!] 为这个特定的数据集保存独立的文件
+            #  为这个特定的数据集保存独立的文件
             try:
                 utility_csv_path = output_dir / f"{llm_name}_evaluation_detailed_utility_{dataset_name}.csv"
                 df_utility_subset.to_csv(utility_csv_path, index=False, encoding='utf-8-sig')
@@ -954,7 +954,7 @@ def main():
         logger.info("未找到可用性结果。")
 
     # --- 计算并保存安全性指标 (ASR) ---
-    # [!] 现有的 'if run_safety:' 检查不是必需的
+    #  现有的 'if run_safety:' 检查不是必需的
     df_safety_results = final_results_df[final_results_df['eval_split'] == 'safety']
     if not df_safety_results.empty:
         attack_methods = df_safety_results['attack_method'].unique()
@@ -993,7 +993,7 @@ def main():
 
     logger.info("评估流程全部完成。")
 
-    # --- [!] 新增: 自动删除临时文件 ---
+    # ---  新增: 自动删除临时文件 ---
     try:
         if 'interim_csv_path' in locals() and interim_csv_path.exists():
             interim_csv_path.unlink()

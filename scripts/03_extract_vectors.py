@@ -22,7 +22,7 @@
     - 将所有样本的逐 token 分数序列按数据集类型分别保存到 .pt 文件，以供 `04_calibrate_defense.py` 使用。
 
 如何运行:
-python scripts/03_extract_vectors.py --config configs/PCA_config.yaml
+python scripts/03_extract_vectors.py --config configs/extract_vectors_config.yaml
 """
 
 import argparse
@@ -184,13 +184,13 @@ def get_diff_vector(pos_activations: torch.Tensor, neg_activations: torch.Tensor
     通过直接计算均值差来提取方向向量 [已移除归一化]。
     """
     mean_diff = pos_activations.mean(dim=0) - neg_activations.mean(dim=0)
-    # [!] 修改：移除归一化
+    #  修改：移除归一化
     norm = torch.norm(mean_diff)
     if norm == 0:
         logging.warning("均值差分向量的范数为零。返回零向量。")
         return torch.zeros_like(mean_diff)
-    # vector = mean_diff / norm # <-- [!] 已移除
-    return mean_diff  # <-- [!] 直接返回原始模长的向量
+    # vector = mean_diff / norm # <--  已移除
+    return mean_diff  # <--  直接返回原始模长的向量
 
 
 def plot_pca_visualizations(
@@ -450,7 +450,7 @@ def calculate_and_save_token_scores(
 
 def main():
     parser = argparse.ArgumentParser(description="从模型激活中提取干预向量和条件向量。")
-    parser.add_argument('--config', type=str, default='../configs/PCA_config.yaml',
+    parser.add_argument('--config', type=str, default='../configs/extract_vectors_config.yaml',
                         help='向量提取阶段的 YAML 配置文件路径。')
     args = parser.parse_args()
 
@@ -530,12 +530,12 @@ def main():
                 indices_refusal = torch.randperm(n_refusal)[:min_samples_v]
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_v]
 
-                # [!] 修改：v_l (干预向量) 不再归一化
+                #  修改：v_l (干预向量) 不再归一化
                 v = get_diff_vector(z_refusal_early[indices_refusal], z_compliance_early[indices_compliance])
                 if (v @ z_refusal_early.mean(0)) <= (v @ z_compliance_early.mean(0)): v = -v
-                # v_norm = torch.norm(v) # <-- [!] 已移除
-                # intervention_vectors[layer] = v / v_norm if v_norm > 0 else v # <-- [!] 已移除
-                intervention_vectors[layer] = v  # <-- [!] 直接保存带模长的向量
+                # v_norm = torch.norm(v) # <--  已移除
+                # intervention_vectors[layer] = v / v_norm if v_norm > 0 else v # <--  已移除
+                intervention_vectors[layer] = v  # <--  直接保存带模长的向量
 
                 all_vectors_for_plot[layer]['v'] = intervention_vectors[layer]
 
@@ -560,28 +560,28 @@ def main():
                 indices_compliance = torch.randperm(n_compliance)[:min_samples_c]
                 indices_benign = torch.randperm(n_benign)[:min_samples_c]
 
-                # [!] 修改：c_l (条件向量) 保持归一化
+                #  修改：c_l (条件向量) 保持归一化
                 c = get_diff_vector(z_compliance_cont[indices_compliance], z_benign_cont[indices_benign])
                 if (c @ z_compliance_cont.mean(0)) <= (c @ z_benign_cont.mean(0)): c = -c
                 c_norm = torch.norm(c)
-                condition_vectors[layer] = c / c_norm if c_norm > 0 else c  # <-- [!] 保持归一化
+                condition_vectors[layer] = c / c_norm if c_norm > 0 else c  # <--  保持归一化
 
                 all_vectors_for_plot[layer]['c'] = condition_vectors[layer]
 
         if log_balancing_info: log_balancing_info = False
 
     if config.get('decoupling', {}).get('enabled', True):
-        # [!] 修改：去耦合逻辑
+        #  修改：去耦合逻辑
         logging.info("正在对向量进行去耦合处理 (仅 v_l)...")
         for layer in layers:
             if layer in intervention_vectors and layer in condition_vectors:
                 v_l, c_l = intervention_vectors[layer], condition_vectors[layer]  # v_l (带模长), c_l (单位向量)
                 if torch.norm(v_l) > 0 and torch.norm(c_l) > 0:
-                    # [!] 只更新 v_l，并移除对 v_l 的归一化
+                    #  只更新 v_l，并移除对 v_l 的归一化
                     v_l_decoupled = v_l - (c_l @ v_l) * c_l
-                    intervention_vectors[layer] = v_l_decoupled  # <-- [!] 直接赋值，保留模长
+                    intervention_vectors[layer] = v_l_decoupled  # <--  直接赋值，保留模长
 
-                    # [!] 不再修改 c_l
+                    #  不再修改 c_l
                     # c_l_decoupled = c_l - (v_l @ c_l) * v_l
                     # norm_c = torch.norm(c_l_decoupled)
                     # if norm_c > 0: condition_vectors[layer] = c_l_decoupled / norm_c

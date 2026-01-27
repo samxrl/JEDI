@@ -217,7 +217,7 @@ def process_batch(
         # --- MODIFICATION START: 仅提取并存储 'content_window' 的聚合激活 ---
         content_window_states = layer_hidden_states[:, padded_prompt_len:, :]
         if content_window_states.shape[1] > 0:
-            # [!] 关键修改: 仅对 content_window 应用 mean_k 截断
+            #  关键修改: 仅对 content_window 应用 mean_k 截断
             agg_content_batch = aggregate_activations(
                 content_window_states,
                 extraction_config['aggregation'],
