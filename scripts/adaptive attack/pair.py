@@ -236,7 +236,6 @@ class PairAttackerConfig(BaseAttackerConfig):
     verbose: bool = field(default=True)
 
 
-
 class PairAttacker(BaseAttacker):
     """
     PAIR Attacker for performing adversarial attacks using a pair of language models.
@@ -254,7 +253,9 @@ class PairAttacker(BaseAttacker):
         self.target_llm = create_llm(config=config.target_llm_config)
 
         pair_judge_config_dict = config.pair_judge
-        pair_judge_config_class = load_class(pair_judge_config_dict.get("judge_cls"), "judges")
+        pair_judge_config_class = load_class(
+            pair_judge_config_dict.get("judge_cls"), "judges"
+        )
         pair_judge_config = parse_nested_config(
             pair_judge_config_class, pair_judge_config_dict
         )
@@ -531,7 +532,7 @@ class PairAttacker(BaseAttacker):
                     attack_prompt = self._extract_prompt(conv_after_attack)
                     break
                 except Exception as e:
-                    
+
                     time.sleep(1)
                     attempt += 1
                     full_conv.pop()
