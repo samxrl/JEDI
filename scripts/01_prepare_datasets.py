@@ -1,25 +1,23 @@
 # -*- coding: utf-8 -*-
-"""
-脚本 01: 数据集准备与切片
+"""Script 01: Dataset preparation and slicing
 
-该脚本遵循“方法流程.md”文档中的第一阶段，用于准备训练表征向量所需的数据集。
+The script follows the first stage in the "Methodflow.md" document for preparing the dataset required to train the representation vectors.
 
-主要功能:
-1.  加载原始的越狱提示数据集（例如，JSONL 格式）。
-2.  根据配置文件中定义的“满足”（compliance）和“拒绝”（refusal）前缀列表。
-3.  为每个越狱提示，生成两种类型的对话样本：
-    - A1 (满足型): 用户提示 + 模型满足的前缀。
-    - A2 (拒绝型): 用户提示 + 模型拒绝的前缀。
-4.  处理良性（benign）数据集，将其与“满足”前缀配对，生成 B1 (良性-满足) 样本。
-    - 支持 CSV 格式（读取 'prompt' 或 'Goal' 列）。
-    - 支持 JSONL 格式（特定支持 justeval 结构，筛选 source_id!=alpaca_eval 且 category==regular）。
-5.  将所有生成的对话样本以结构化的 CSV 格式保存到处理后的数据目录中。
-    - 每个样本包含原始提示、所用前缀、类别以及符合模型输入的对话结构（对话结构将作为JSON字符串存储）。
+Main functions:
+1. Load the original jailbreak tip data set (for example, JSONL format).
+2. Based on the "compliance" and "refusal" prefix lists defined in the configuration file.
+3. For each jailbreak prompt, two types of conversation samples are generated:
+    - A1 (satisfied type): user prompt + prefix that the model satisfies.
+    - A2 (rejection type): user prompt + prefix for model rejection.
+4. Process the benign data set, pair it with the "satisfied" prefix, and generate B1 (benign-satisfied) samples.
+    - Supports CSV format (reading 'prompt' or 'Goal' columns).
+    - Support JSONL format (specific support for justeval structure, filter source_id!=alpaca_eval and category==regular).
+5. Save all generated conversation samples in a structured CSV format to the processed data directory.
+    - Each sample contains the original prompt, the prefix used, the category, and the conversation structure that matches the model input (the conversation structure will be stored as a JSON string).
 
 
-如何运行:
-python scripts/01_prepare_datasets.py --config configs/data_prep_config.yaml
-"""
+How to run:
+python scripts/01_prepare_datasets.py --config configs/data_prep_config.yaml"""
 
 import json
 import argparse
@@ -32,160 +30,190 @@ import random
 
 
 def create_paired_samples(
-        prompt: str,
-        behavior: str,
-        functional_category: str,
-        context_string: str,
-        compliance_prefixes: list,
-        refusal_prefixes: list,
-        compliance_category: str = "compliance",
-        refusal_category: str = "refusal"
+    prompt: str,
+    behavior: str,
+    functional_category: str,
+    context_string: str,
+    compliance_prefixes: list,
+    refusal_prefixes: list,
+    compliance_category: str = "compliance",
+    refusal_category: str = "refusal",
 ) -> tuple[list, list]:
-    """
-    为给定的提示词创建成对的样本。
+    """Create pairs of samples for a given prompt word.
 
     Args:
-        prompt (str): 用户的原始提示。
-        behavior (str): 行为描述。
-        functional_category (str): 功能类别。
-        context_string (str): 上下文信息字符串。
-        compliance_prefixes (list): 表示模型满足意图的前缀列表。
-        refusal_prefixes (list): 表示模型拒绝意图的前缀列表。
-        compliance_category (str): 满足型样本的类别标签。
-        refusal_category (str): 拒绝型样本的类别标签。
+        prompt (str): The user's original prompt.
+        behavior (str): Behavior description.
+        functional_category (str): Functional category.
+        context_string (str): context information string.
+        compliance_prefixes (list): A list of prefixes indicating that the model satisfies the intent.
+        refusal_prefixes (list): A list of prefixes representing the model's rejection intent.
+        compliance_category (str): The category label of the compliance sample.
+        refusal_category (str): The category label of the rejection sample.
 
     Returns:
-        tuple[list, list]: 一个元组，包含两个列表：(满足样本列表, 拒绝样本列表)。
-                           每个样本都是一个包含对话历史的字典。
+        tuple[list, list]: A tuple containing two lists: (satisfied sample list, rejected sample list).
+                           Each sample is a dictionary containing the conversation history.
     """
     compliance_samples = []
     refusal_samples = []
 
-    # --- 创建满足样本 ---
+    # ---Create satisfying samples ---
     for prefix in compliance_prefixes:
-        # 构建符合模型对话模板的输入结构
+        # Build an input structure that conforms to the model dialogue template
         conversation = [
             {"role": "user", "content": prompt},
-            {"role": "assistant", "content": prefix}
+            {"role": "assistant", "content": prefix},
         ]
-        compliance_samples.append({
-            "prompt": prompt,
-            "prefix": prefix,
-            "category": compliance_category,
-            "conversation": conversation,
-            "behavior": behavior,
-            "FunctionalCategory": functional_category,
-            "ContextString": context_string,
-        })
+        compliance_samples.append(
+            {
+                "prompt": prompt,
+                "prefix": prefix,
+                "category": compliance_category,
+                "conversation": conversation,
+                "behavior": behavior,
+                "FunctionalCategory": functional_category,
+                "ContextString": context_string,
+            }
+        )
 
-    # --- 创建拒绝样本 ---
+        # ---Create rejection samples ---
     for prefix in refusal_prefixes:
         conversation = [
             {"role": "user", "content": prompt},
-            {"role": "assistant", "content": prefix}
+            {"role": "assistant", "content": prefix},
         ]
-        refusal_samples.append({
-            "prompt": prompt,
-            "prefix": prefix,
-            "category": refusal_category,
-            "conversation": conversation,
-            "behavior": behavior,
-            "FunctionalCategory": functional_category,
-            "ContextString": context_string,
-        })
+        refusal_samples.append(
+            {
+                "prompt": prompt,
+                "prefix": prefix,
+                "category": refusal_category,
+                "conversation": conversation,
+                "behavior": behavior,
+                "FunctionalCategory": functional_category,
+                "ContextString": context_string,
+            }
+        )
 
     return compliance_samples, refusal_samples
 
 
 def process_dataset(config: dict):
-    """
-    根据配置文件处理所有指定的数据集。
+    """Process all specified data sets according to the configuration file.
 
     Args:
-        config (dict): 从 YAML 文件加载的配置字典。
-    """
-    config_path = Path(config['__config_path__'])
+        config (dict): Configuration dictionary loaded from YAML file."""
+    config_path = Path(config["__config_path__"])
     base_dir = config_path.parent.parent
-    output_dir = base_dir / config['output_dir']
+    output_dir = base_dir / config["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"所有处理后的文件将保存在: {output_dir.resolve()}")
+    print(f"All processed files will be saved in:{output_dir.resolve()}")
 
-    # --- 统一加载前缀列表 ---
-    prefixes_config = config.get('prefixes', {})
-    source_file = prefixes_config.get('source_file')
+    # --- Load prefix list uniformly ---
+    prefixes_config = config.get("prefixes", {})
+    source_file = prefixes_config.get("source_file")
     compliance_prefixes = []
     refusal_prefixes = []
 
     if source_file:
         source_file_path = base_dir / source_file
-        print(f"从文件加载前缀: {source_file_path.resolve()}")
+        print(f"Load prefix from file:{source_file_path.resolve()}")
         try:
-            with open(source_file_path, 'r', encoding='utf-8') as f:
+            with open(source_file_path, "r", encoding="utf-8") as f:
                 prefix_data = json.load(f)
 
-            compliance_key = prefixes_config.get('compliance_key')
-            refusal_key = prefixes_config.get('refusal_key')
+            compliance_key = prefixes_config.get("compliance_key")
+            refusal_key = prefixes_config.get("refusal_key")
 
             if not compliance_key or not refusal_key:
-                raise ValueError("当指定 'source_file' 时，配置文件中必须同时提供 'compliance_key' 和 'refusal_key'。")
+                raise ValueError(
+                    "When 'source_file' is specified, both 'compliance_key' and 'refusal_key' must be provided in the configuration file."
+                )
 
             compliance_prefixes = prefix_data.get(compliance_key, [])
             refusal_prefixes = prefix_data.get(refusal_key, [])
-            print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
+            print(
+                f"loaded{len(compliance_prefixes)}The prefix sum satisfies{len(refusal_prefixes)}Denied prefix."
+            )
 
         except FileNotFoundError:
-            print(f"ERROR: 前缀源文件未找到: {source_file_path.resolve()}")
+            print(f"ERROR: Prefix source file not found:{source_file_path.resolve()}")
             return
         except (json.JSONDecodeError, KeyError) as e:
-            print(f"ERROR: 解析前缀文件 {source_file_path.resolve()} 或查找指定的键时出错: {e}")
+            print(
+                f"ERROR: Parsing prefix file{source_file_path.resolve()}Or an error occurred while looking for the specified key:{e}"
+            )
             return
     else:
-        # 如果未指定源文件，则尝试从配置中直接读取（旧版兼容）
-        print("从配置文件直接加载前缀列表...")
-        compliance_prefixes = prefixes_config.get('compliance', [])
-        refusal_prefixes = prefixes_config.get('refusal', [])
-        print(f"加载了 {len(compliance_prefixes)} 条满足型前缀和 {len(refusal_prefixes)} 条拒绝型前缀。")
+        # If no source file is specified, attempts to read directly from the configuration (legacy compatibility)
+        print("Load prefix list directly from configuration file...")
+        compliance_prefixes = prefixes_config.get("compliance", [])
+        refusal_prefixes = prefixes_config.get("refusal", [])
+        print(
+            f"loaded{len(compliance_prefixes)}The prefix sum satisfies{len(refusal_prefixes)}Denied prefix."
+        )
 
-    # --- 处理越狱数据集 ---
-    if 'jailbreak_dataset' in config:
+        # --- Processing jailbreak data sets ---
+    if "jailbreak_dataset" in config:
         if not compliance_prefixes or not refusal_prefixes:
-            raise ValueError("处理越狱数据集时，必须成功加载 'compliance' 和 'refusal' 前缀列表。")
+            raise ValueError(
+                "When processing jailbroken datasets, the 'compliance' and 'refusal' prefix lists must be loaded successfully."
+            )
 
-        print("开始处理越狱数据集...")
-        jb_config = config['jailbreak_dataset']
-        input_path = base_dir / jb_config['input_file']
+        print("Starting to process the jailbreak dataset...")
+        jb_config = config["jailbreak_dataset"]
+        input_path = base_dir / jb_config["input_file"]
 
-        compliance_output_path = output_dir / f"{config['llm_name']}_jailbreak_compliance.csv"
+        compliance_output_path = (
+            output_dir / f"{config['llm_name']}_jailbreak_compliance.csv"
+        )
         refusal_output_path = output_dir / f"{config['llm_name']}_jailbreak_refusal.csv"
 
         try:
-            with open(input_path, 'r', encoding='utf-8') as f:
+            with open(input_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 records = data["records"]
         except FileNotFoundError:
-            print(f"ERROR: 输入文件未找到: {input_path.resolve()}")
+            print(f"ERROR: Input file not found:{input_path.resolve()}")
             return
         except (json.JSONDecodeError, KeyError) as e:
-            print(f"ERROR: 解析文件 {input_path.resolve()} 时出错: {e}. 请确保文件是有效的 JSON 格式，且'records'列表下每项都有 'prompt' 键。")
+            print(
+                f"ERROR: Parse file{input_path.resolve()}An error occurred:{e}. Please make sure the file is in valid JSON format and that each item in the 'records' list has a 'prompt' key."
+            )
             return
 
-        print(f"从 {input_path.resolve()} 加载了 {len(records)} 条越狱提示。")
+        print(f"from{input_path.resolve()}loaded{len(records)}jailbreak tips.")
 
-        with open(compliance_output_path, 'w', encoding='utf-8-sig', newline='') as f_comply, \
-                open(refusal_output_path, 'w', encoding='utf-8-sig', newline='') as f_refuse:
+        with open(
+            compliance_output_path, "w", encoding="utf-8-sig", newline=""
+        ) as f_comply, open(
+            refusal_output_path, "w", encoding="utf-8-sig", newline=""
+        ) as f_refuse:
 
             comply_writer = csv.writer(f_comply)
             refuse_writer = csv.writer(f_refuse)
 
-            header = ["prompt", "prefix", "category", "conversation", "behavior", "FunctionalCategory", "ContextString"]
+            header = [
+                "prompt",
+                "prefix",
+                "category",
+                "conversation",
+                "behavior",
+                "FunctionalCategory",
+                "ContextString",
+            ]
             comply_writer.writerow(header)
             refuse_writer.writerow(header)
 
-            for record in tqdm(records, desc="处理越狱提示中"):
+            for record in tqdm(records, desc="Processing jailbreak prompts"):
                 prompt = record["prompt"]
                 behavior = record["behavior"]
                 functional_category = record["FunctionalCategory"]
-                context_string = record["ContextString"] if functional_category == 'contextual' else ""
+                context_string = (
+                    record["ContextString"]
+                    if functional_category == "contextual"
+                    else ""
+                )
 
                 compliance_samples, refusal_samples = create_paired_samples(
                     prompt,
@@ -193,31 +221,58 @@ def process_dataset(config: dict):
                     functional_category,
                     context_string,
                     compliance_prefixes,
-                    refusal_prefixes
+                    refusal_prefixes,
                 )
                 for sample in compliance_samples:
-                    conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'],
-                           sample['ContextString']]
+                    conversation_str = json.dumps(
+                        sample["conversation"], ensure_ascii=False
+                    )
+                    row = [
+                        sample["prompt"],
+                        sample["prefix"],
+                        sample["category"],
+                        conversation_str,
+                        sample["behavior"],
+                        sample["FunctionalCategory"],
+                        sample["ContextString"],
+                    ]
                     comply_writer.writerow(row)
                 for sample in refusal_samples:
-                    conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                    row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, sample['behavior'], sample['FunctionalCategory'],
-                           sample['ContextString']]
+                    conversation_str = json.dumps(
+                        sample["conversation"], ensure_ascii=False
+                    )
+                    row = [
+                        sample["prompt"],
+                        sample["prefix"],
+                        sample["category"],
+                        conversation_str,
+                        sample["behavior"],
+                        sample["FunctionalCategory"],
+                        sample["ContextString"],
+                    ]
                     refuse_writer.writerow(row)
 
-        print(f"成功将满足型 (A1) 样本写入: {compliance_output_path.resolve()}")
-        print(f"成功将拒绝型 (A2) 样本写入: {refusal_output_path.resolve()}")
+        print(
+            f"Successfully write the satisfying type (A1) sample into:{compliance_output_path.resolve()}"
+        )
+        print(
+            f"Successfully written rejection type (A2) sample to:{refusal_output_path.resolve()}"
+        )
 
-    # --- 处理良性数据集 ---
-    if 'benign_dataset' in config and config['benign_dataset'].get('input_files') is not None:
+        # --- Processing benign data sets ---
+    if (
+        "benign_dataset" in config
+        and config["benign_dataset"].get("input_files") is not None
+    ):
         if not compliance_prefixes:
-            raise ValueError("处理良性数据集时，必须成功加载 'compliance' 前缀列表。")
+            raise ValueError(
+                "When working with benign datasets, the 'compliance' prefix list must be loaded successfully."
+            )
 
-        print("开始处理良性数据集...")
-        benign_config = config['benign_dataset']
-        input_files = benign_config['input_files']
-        sample_size = benign_config.get('sample_size', 100)
+        print("Start processing benign data sets...")
+        benign_config = config["benign_dataset"]
+        input_files = benign_config["input_files"]
+        sample_size = benign_config.get("sample_size", 100)
         output_path = output_dir / f"{config['llm_name']}_benign_compliance.csv"
 
         all_prompts = []
@@ -226,11 +281,13 @@ def process_dataset(config: dict):
             prompts_from_file = []
 
             try:
-                # 检查文件后缀，区分处理逻辑
-                if file_path.suffix.lower() == '.jsonl':
-                    # 处理 JSONL 格式 (专门针对 justeval 类型的结构)
-                    print(f"检测到 JSONL 文件，按 JustEval 结构处理: {file_path.resolve()}")
-                    with open(file_path, 'r', encoding='utf-8') as f:
+                # Check file suffix to distinguish processing logic
+                if file_path.suffix.lower() == ".jsonl":
+                    # Processing JSONL format (specifically for justeval type structures)
+                    print(
+                        f"JSONL file detected, processed according to JustEval structure:{file_path.resolve()}"
+                    )
+                    with open(file_path, "r", encoding="utf-8") as f:
                         lines = f.readlines()
 
                     candidates = []
@@ -239,41 +296,49 @@ def process_dataset(config: dict):
                             continue
                         try:
                             item = json.loads(line)
-                            # 筛选条件:
-                            # 1. source_id 不包含 'alpaca_eval'
-                            # 2. category 为 'regular'
+                            # Filter criteria:
+                            # 1. source_id does not contain 'alpaca_eval'
+                            # 2. category is 'regular'
                             source_id = str(item.get("source_id", ""))
                             category = str(item.get("category", ""))
 
                             if "alpaca_eval" not in source_id and category == "regular":
-                                # 提取 prompt，优先使用 'instruction'，其次 'prompt'
+                                # To extract prompt, use 'instruction' first, followed by 'prompt'
                                 p_text = item.get("instruction") or item.get("prompt")
                                 if p_text:
                                     candidates.append(str(p_text))
                         except json.JSONDecodeError:
-                            print(f"WARNING: 跳过无法解析的 JSON 行 in {file_path.name}")
+                            print(
+                                f"WARNING: Skipping unparsable JSON lines in{file_path.name}"
+                            )
                             continue
 
-                    # 对筛选后的数据进行采样
+                            # Sampling filtered data
                     if candidates:
                         num_candidates = len(candidates)
                         actual_sample_size = min(sample_size, num_candidates)
                         sampled_list = random.sample(candidates, actual_sample_size)
                         for p in sampled_list:
                             prompts_from_file.append((p, file_path.name))
-                        print(f"从 {file_path.resolve()} 筛选出 {num_candidates} 条有效样本，并采样了 {len(prompts_from_file)} 条。")
+                        print(
+                            f"from{file_path.resolve()}filter out{num_candidates}valid samples and sampled{len(prompts_from_file)}strip."
+                        )
                     else:
-                        print(f"WARNING: 在 {file_path.name} 中未找到符合条件的样本 (source_id!=alpaca_eval, category==regular)。")
+                        print(
+                            f"WARNING: in{file_path.name}No matching sample was found (source_id!=alpaca_eval, category==regular)."
+                        )
 
                 else:
-                    # 默认处理 CSV 格式 (原有逻辑)
+                    # Process CSV format by default (original logic)
                     df = pd.read_csv(file_path)
-                    prompt_column = 'prompt'
+                    prompt_column = "prompt"
                     if prompt_column not in df.columns:
-                        if 'Goal' in df.columns:
-                            prompt_column = 'Goal'
+                        if "Goal" in df.columns:
+                            prompt_column = "Goal"
                         else:
-                            raise ValueError(f"在 {file_path} 中找不到合适的提示列 ('prompt' or 'Goal')。")
+                            raise ValueError(
+                                f"exist{file_path}No suitable prompt column ('prompt' or 'Goal') found in ."
+                            )
 
                     num_rows = len(df)
                     if num_rows > 0:
@@ -282,77 +347,93 @@ def process_dataset(config: dict):
                         for _, row in sampled_df.iterrows():
                             prompt = row[prompt_column]
                             if pd.notna(prompt):
-                                # 保存 prompt 和其来源文件名
+                                # Save prompt and its source file name
                                 prompts_from_file.append((str(prompt), file_path.name))
-                    print(f"从 {file_path.resolve()} (CSV) 成功采样 {len(prompts_from_file)} 条良性提示。")
+                    print(
+                        f"from{file_path.resolve()}(CSV) Sampled successfully{len(prompts_from_file)}A good reminder."
+                    )
 
                 all_prompts.extend(prompts_from_file)
 
             except FileNotFoundError:
-                print(f"ERROR: 输入文件未找到: {file_path.resolve()}")
+                print(f"ERROR: Input file not found:{file_path.resolve()}")
             except Exception as e:
-                print(f"ERROR: 处理文件 {file_path.resolve()} 时出错: {e}")
+                print(
+                    f"ERROR: processing file{file_path.resolve()}An error occurred:{e}"
+                )
 
         if all_prompts:
-            # 再次打乱所有来源的样本
+            # Scramble samples from all sources again
             random.shuffle(all_prompts)
-            print(f"总共收集 {len(all_prompts)} 条良性提示进行处理。")
+            print(f"Collect in total{len(all_prompts)}benign tips for processing.")
 
-            with open(output_path, 'w', encoding='utf-8-sig', newline='') as f_out:
+            with open(output_path, "w", encoding="utf-8-sig", newline="") as f_out:
                 header = ["prompt", "prefix", "category", "conversation", "source"]
                 writer = csv.writer(f_out)
                 writer.writerow(header)
 
                 total_samples_written = 0
-                for prompt, source in tqdm(all_prompts, desc="处理良性提示中"):
+                for prompt, source in tqdm(
+                    all_prompts, desc="Processing benign prompts"
+                ):
                     compliance_samples, _ = create_paired_samples(
                         prompt=prompt,
                         behavior="",
                         functional_category="",
                         context_string="",
                         compliance_prefixes=compliance_prefixes,
-                        refusal_prefixes=[],  # 良性样本不需要与拒绝前缀配对
-                        compliance_category="benign_compliance"
+                        refusal_prefixes=[],  # Benign samples do not need to be paired with reject prefixes
+                        compliance_category="benign_compliance",
                     )
 
                     for sample in compliance_samples:
-                        conversation_str = json.dumps(sample['conversation'], ensure_ascii=False)
-                        row = [sample['prompt'], sample['prefix'], sample['category'], conversation_str, source]
+                        conversation_str = json.dumps(
+                            sample["conversation"], ensure_ascii=False
+                        )
+                        row = [
+                            sample["prompt"],
+                            sample["prefix"],
+                            sample["category"],
+                            conversation_str,
+                            source,
+                        ]
                         writer.writerow(row)
                         total_samples_written += 1
 
-            print(f"成功将 {total_samples_written} 条良性满足型 (B1) 样本写入: {output_path.resolve()}")
+            print(
+                f"Success will{total_samples_written}The sample of benign satisfaction type (B1) is written:{output_path.resolve()}"
+            )
 
 
 def main():
-    """
-    主函数，用于解析命令行参数并启动数据集处理流程。
-    """
+    """The main function is used to parse command line parameters and start the data set processing process."""
     parser = argparse.ArgumentParser(
-        description="根据配置文件准备用于表征工程的数据集。",
-        formatter_class=argparse.RawTextHelpFormatter
+        description="Prepare data sets for characterization projects based on profiles.",
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
-        '--config',
+        "--config",
         type=str,
-        default='../configs/data_prep_config.yaml',
-        help='指定数据准备阶段的 YAML 配置文件路径。\n默认: ../configs/data_prep_config.yaml'
+        default="../configs/data_prep_config.yaml",
+        help="Specifies the YAML configuration file path for the data preparation phase. \\nDefault: ../configs/data_prep_config.yaml",
     )
     args = parser.parse_args()
 
     config_path = Path(args.config)
     if not config_path.exists():
-        print(f"ERROR: 配置文件不存在: {config_path.resolve()}")
+        print(f"ERROR: Configuration file does not exist:{config_path.resolve()}")
         return
 
-    print(f"加载配置文件: {config_path.resolve()}")
-    with open(config_path, 'r', encoding='utf-8') as f:
+    print(f"Load configuration file:{config_path.resolve()}")
+    with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-        config['__config_path__'] = str(config_path.resolve())  # 将配置文件路径注入，方便计算相对路径
+        config["__config_path__"] = str(
+            config_path.resolve()
+        )  # Inject the configuration file path to facilitate calculation of relative paths
 
     process_dataset(config)
 
-    print("数据集准备流程全部完成。")
+    print("The data set preparation process is complete.")
 
 
 if __name__ == "__main__":
