@@ -14,18 +14,12 @@ data/processed/*
 data/activations/*
 data/ablation/*
 data/evaluations/plot Guarded Trigger Steps Boxplot.py
-
-
-
 Kernel Density Simulation Visualization.py
 
 # Artifacts
 artifacts/*
 
 /.idea/
-
-PROJECT_STRUCTURE.md
-方法流程.md
 
 #sample_jailbreaks.py
 scripts/adaptive_evaluation.py
