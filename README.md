@@ -4,6 +4,7 @@ JEDI (Jailbreak dEfense via Detection and Intervention) is a defense method that
 
 ![Overview](images/workflow.png "Overview")
 
+
 ```mermaid
 flowchart LR
     A[Prepare datasets] --> B[Extract activations]
@@ -31,6 +32,7 @@ If you prefer a requirements file:
 ```shell
 pip install -r requirements.txt
 ```
+
 ---
 
 ## 🚀 Quick Start
@@ -85,6 +87,7 @@ Guard.from_artifacts(artifact_path: str, device: str | None = None) -> Guard
 * `guard`: A configured `Guard` instance ready to attach to a Hugging Face model.
 
 use `with` context to attach the `guard` to a model, `model.generate()` can be invoked in the standard manner while leveraging JEDI's defense against jailbreak attacks.
+
 ```python
 with guard.attach(model):
     output = model.generate(...)
@@ -116,6 +119,7 @@ data/processed/
 ```
 
 > Note: Use the pre-sampled jailbreak prompts in `data/raw`, or run `sample_jailbreaks.py` to sample jailbreak prompts for your model:
+> 
 > ```shell
 > python sample_jailbreaks.py ----llm <llm_name>
 > ```
@@ -123,6 +127,7 @@ data/processed/
 **Step 2: Build artifacts (activations → vectors → calibration)**
 
 Edit configs as needed, then run:
+
 ```shell
 python scripts/02_extract_activations.py --config configs/extraction_config.yaml
 python scripts/02.5_judge_harmfulness.py --config configs/judgment_config.yaml
@@ -146,11 +151,13 @@ data/activations/
 **Step 3: Run evaluation**
 
 Edit `configs/evaluation_config.yaml` as needed, then run:
+
 ```shell
 python scripts/run_evaluation.py --config configs/evaluation_config.yaml
 ```
 
 Outputs are written to (smple):
+
 ```
 data/evaluations/<llm_name>/
 ├── <llm_name>_evaluation_detailed_attack_<attack>.csv # per-attack detailed results
@@ -161,7 +168,6 @@ data/evaluations/<llm_name>/
 ├── <llm_name>_xstest_baseline.csv # overall baseline results on xstest
 └── <llm_name>_xstest_guarded.csv # overall JEDI results on xstest
 ```
-
 
 ## 🔍 Visualization (Optional)
 
@@ -189,3 +195,4 @@ data/activations/pca_visualization_content_window.png
 ## 🙏 Acknowledgments
 
 We would like to thank the [**HarmBench**](https://github.com/centerforaisafety/HarmBench) and [**PandaGuard**](https://github.com/Beijing-AISI/panda-guard/tree/main?tab=readme-ov-file) for providing jailbreak prompts and baseline implementations that significantly contributed to the evaluation of JEDI.
+
