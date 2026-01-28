@@ -34,18 +34,18 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
         else:
             json_path = root / attack / llm / "results" / f"{llm}.json"
         if not json_path.exists():
-            print(f"[WARN] 文件不存在：{json_path}")
+            print(f"[WARN] File not found: {json_path}")
             continue
 
         try:
             with json_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            print(f"[WARN] 读取失败：{json_path}，错误：{e}")
+            print(f"[WARN] Failed to read: {json_path}, error: {e}")
             continue
 
         if not isinstance(data, dict):
-            print(f"[WARN] 非预期结构（顶层不是 dict）：{json_path}")
+            print(f"[WARN] Unexpected structure (top-level is not dict): {json_path}")
             continue
 
         for key, items in data.items():
@@ -63,7 +63,7 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
                     behavior = behaviors_df.loc[key, 'Behavior']
                     FunctionalCategory = behaviors_df.loc[key, 'FunctionalCategory']
                 except KeyError:
-                    print(f"[WARN] 在行为文件中未找到 BehaviorID '{key}'。")
+                    print(f"[WARN] BehaviorID '{key}' not found in behaviors file.")
                     continue  # Skip behaviors that are not found.
 
                 buckets[attack].append({
@@ -148,16 +148,18 @@ def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: i
         # JSON keys (e.g., 'queer_lgbtq_harassment_text') are BehaviorID values.
         behaviors_df.set_index('BehaviorID', inplace=True)
     except FileNotFoundError:
-        print(f"[ERROR] 在路径中未找到行为文件： {behaviors_path}")
+        print(f"[ERROR] Behaviors file not found at path: {behaviors_path}")
         return
     except KeyError:
-        print(f"[ERROR] 行为文件必须包含 'BehaviorID' 列。")
+        print("[ERROR] Behaviors file must contain a 'BehaviorID' column.")
         return
 
     buckets = load_by_attack(root, llm, behaviors_df)
     total_candidates = sum(len(v) for v in buckets.values())
     if total_candidates == 0:
-        raise RuntimeError("未找到任何 label==1 的越狱提示，请检查路径与数据。")
+        raise RuntimeError(
+            "No label==1 jailbreak prompts were found. Please check paths and data."
+        )
 
     target_n = min(n, total_candidates)
     quota = _plan_quota(buckets, target_n, seed)
@@ -195,8 +197,10 @@ def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: i
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
-    print(f"完成：总候选 {total_candidates}，按等量策略采样 {len(records)} 条 → {out}")
-    print("每个攻击方法分配：", {k: v for k, v in quota.items() if v > 0})
+    print(
+        f"Done: {total_candidates} total candidates, sampled {len(records)} with equal strategy -> {out}"
+    )
+    print("Allocation per attack method:", {k: v for k, v in quota.items() if v > 0})
 
 
 if __name__ == "__main__":
