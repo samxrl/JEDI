@@ -135,6 +135,9 @@ python scripts/03_extract_vectors.py --config configs/extract_vectors_config.yam
 python scripts/04_calibrate_defense.py --config configs/calibration_config.yaml
 ```
 
+You can download the `HarmBench-Llama-2-13b-cls` model weights [here](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) for `02.5_judge_harmfulness.py`
+
+
 Artifacts and scores are saved to:
 
 ```
