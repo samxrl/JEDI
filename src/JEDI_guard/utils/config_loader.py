@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-工具：防御产物加载器
+Utility: defense artifact loader
 
-该文件提供了一个核心辅助函数 `load_defense_artifacts`，
-用于从指定的目录中加载所有 JEDI 防御所需的离线产物。
+This file provides the core helper function `load_defense_artifacts`, which
+loads all offline artifacts required by the JEDI defense from a given directory.
 
-根据 `PROJECT_STRUCTURE.md` 和 `03/04` 号脚本，这些产物包括：
-- `defense_params.yaml`: 包含校准后的参数 (theta, mu_hat, kappa, alpha, best_layer)。
-- `transforms.pt`: 包含用于“早期窗口”和“内容窗口”的白化/中心化变换。
-- `condition_vectors.pt`: 包含所有层的条件向量 (c_l)，用于检测。
-- `intervention_vectors.pt`: 包含所有层的干预向量 (v_l)，用于转向。
+According to `PROJECT_STRUCTURE.md` and scripts dated 03/04, the artifacts include:
+- `defense_params.yaml`: calibrated parameters (theta, mu_hat, kappa, alpha, best_layer).
+- `transforms.pt`: whitening/centering transforms for "early" and "content" windows.
+- `condition_vectors.pt`: condition vectors (c_l) for all layers, used for detection.
+- `intervention_vectors.pt`: intervention vectors (v_l) for all layers, used for steering.
 
-`Guard` 类的 `from_artifacts` 方法依赖此加载器来初始化防御系统。
+The `Guard.from_artifacts` method depends on this loader to initialize the defense system.
 """
 
 import yaml
@@ -28,30 +28,32 @@ def load_defense_artifacts(
         device: Optional[str] = 'cpu'
 ) -> Dict[str, Any]:
     """
-    从指定目录加载所有 JEDI 防御产物。
+    Load all JEDI defense artifacts from the specified directory.
 
     Args:
         artifact_path (str):
-            包含所有产物文件的目录路径。
+            Directory path containing all artifact files.
         device (str, optional):
-            将 PyTorch 张量加载到的目标设备。默认为 'cpu'。
+            Target device to load PyTorch tensors onto. Defaults to 'cpu'.
 
     Returns:
         Dict[str, Any]:
-            一个字典，包含了所有加载的产物，结构如下：
+            A dictionary containing all loaded artifacts with the structure:
             {
-                'defense_params': {...},      // 来自 defense_params.yaml
-                'transforms': {...},          // 来自 transforms.pt
-                'condition_vectors': {...},   // 来自 condition_vectors.pt
-                'intervention_vectors': {...} // 来自 intervention_vectors.pt
+                'defense_params': {...},      // from defense_params.yaml
+                'transforms': {...},          // from transforms.pt
+                'condition_vectors': {...},   // from condition_vectors.pt
+                'intervention_vectors': {...} // from intervention_vectors.pt
             }
 
     Raises:
-        FileNotFoundError: 如果缺少任何必需的文件。
+        FileNotFoundError: If any required file is missing.
     """
     base_path = Path(artifact_path)
     if not base_path.is_dir():
-        raise FileNotFoundError(f"指定的产物路径不是一个有效的目录: {artifact_path}")
+        raise FileNotFoundError(
+            f"The specified artifact path is not a valid directory: {artifact_path}"
+        )
 
     files_to_load = {
         'defense_params': base_path / 'defense_params.yaml',
@@ -63,39 +65,39 @@ def load_defense_artifacts(
     loaded_artifacts = {}
     map_location = torch.device(device)
 
-    # 检查所有文件是否存在
+    # Check that all files exist
     for key, path in files_to_load.items():
         if not path.exists():
-            raise FileNotFoundError(f"必需的防御产物文件未找到: {path}")
+            raise FileNotFoundError(f"Required defense artifact file not found: {path}")
 
-    # 1. 加载 YAML 配置文件
+    # 1. Load YAML config file
     try:
         with open(files_to_load['defense_params'], 'r', encoding='utf-8') as f:
             loaded_artifacts['defense_params'] = yaml.safe_load(f)
-        logger.info(f"成功加载防御参数: {files_to_load['defense_params']}")
+        logger.info("Loaded defense params: %s", files_to_load['defense_params'])
     except Exception as e:
-        logger.error(f"加载或解析 {files_to_load['defense_params']} 时出错: {e}")
+        logger.error("Error loading or parsing %s: %s", files_to_load['defense_params'], e)
         raise
 
-    # 2. 加载 PyTorch 张量文件
+    # 2. Load PyTorch tensor files
     try:
         loaded_artifacts['transforms'] = torch.load(
             files_to_load['transforms'], map_location=map_location
         )
-        logger.info(f"成功加载变换矩阵: {files_to_load['transforms']}")
+        logger.info("Loaded transform matrices: %s", files_to_load['transforms'])
 
         loaded_artifacts['condition_vectors'] = torch.load(
             files_to_load['condition_vectors'], map_location=map_location
         )
-        logger.info(f"成功加载条件向量: {files_to_load['condition_vectors']}")
+        logger.info("Loaded condition vectors: %s", files_to_load['condition_vectors'])
 
         loaded_artifacts['intervention_vectors'] = torch.load(
             files_to_load['intervention_vectors'], map_location=map_location
         )
-        logger.info(f"成功加载干预向量: {files_to_load['intervention_vectors']}")
+        logger.info("Loaded intervention vectors: %s", files_to_load['intervention_vectors'])
 
     except Exception as e:
-        logger.error(f"加载 PyTorch 产物时出错 (设备: {device}): {e}")
+        logger.error("Error loading PyTorch artifacts (device: %s): %s", device, e)
         raise
 
     return loaded_artifacts

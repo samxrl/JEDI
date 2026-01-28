@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-该文件实现了与模型内部表征（隐藏状态）处理相关的核心功能。
+This file implements core functionality related to processing model internal
+representations (hidden states).
 
-根据“方法流程.md”文档，在计算任何风险分数之前，需要对原始的隐藏状态
-进行标准化处理（中心化和可选的白化）。这样做可以消除不同维度间的尺度差异和相关性，
-使得后续通过向量投影计算出的分数更加稳定和可比较。
+According to \"Method Flow.md\", before computing any risk scores, raw hidden states
+must be normalized (centering and optional whitening). This removes scale
+differences and correlations across dimensions, making subsequent projection
+scores more stable and comparable.
 
-本文件主要提供 `apply_transform` 函数，该函数负责执行此标准化步骤。
+This file mainly provides the `apply_transform` function, which performs this
+normalization step.
 """
 
 import torch
@@ -18,101 +21,112 @@ def apply_transform(
         transform: Tuple[Optional[torch.Tensor], torch.Tensor]
 ) -> torch.Tensor:
     """
-    将预先计算好的变换（中心化和可选的白化）应用于输入的隐藏状态。
+    Apply a precomputed transform (centering and optional whitening) to input
+    hidden states.
 
-    此函数是表征工程流程中的关键一步。它接收一批隐藏状态以及一个包含
-    白化矩阵 'W' (如果启用) 和均值向量 'mu' 的元组。
+    This function is a key step in the representation pipeline. It accepts a
+    batch of hidden states and a tuple containing the whitening matrix 'W'
+    (if enabled) and mean vector 'mu'.
 
     Args:
         hidden_states (torch.Tensor):
-            从模型中提取的原始隐藏状态张量。
-            形状可以是 (N, D) 用于单个序列的聚合表示，
-            或 (B, N, D) 用于批量处理的逐 token 序列，
-            其中 B 是批量大小, N 是序列长度, D 是隐藏层维度。
+            Raw hidden states extracted from the model.
+            Shape can be (N, D) for a single sequence aggregate, or
+            (B, N, D) for batched per-token sequences, where B is batch size,
+            N is sequence length, and D is hidden dimension.
 
         transform (Tuple[Optional[torch.Tensor], torch.Tensor]):
-            一个元组 `(W, mu)`，其中:
-            - `W` (torch.Tensor, optional): 白化矩阵，形状为 (D, D)。如果为 None，则只执行中心化。
-            - `mu` (torch.Tensor): 均值向量，形状为 (D,)，用于中心化。
+            A tuple `(W, mu)`, where:
+            - `W` (torch.Tensor, optional): Whitening matrix, shape (D, D). If None,
+              only centering is applied.
+            - `mu` (torch.Tensor): Mean vector, shape (D,), used for centering.
 
     Returns:
         torch.Tensor:
-            经过变换（中心化和可选白化）后的隐藏状态，形状与输入 `hidden_states` 相同。
+            Transformed hidden states with the same shape as the input.
 
     Raises:
-        ValueError: 如果输入 `hidden_states` 的维度不是 2 或 3，则会引发错误。
+        ValueError: If `hidden_states` does not have 2 or 3 dimensions.
     """
     W, mu, _ = transform
     device = hidden_states.device
 
-    # 确保 mu 和 W (如果存在) 与隐藏状态在同一设备上
+    # Ensure mu and W (if present) are on the same device as hidden_states
     mu_device = mu.to(device)
 
-    # 步骤 1: 中心化 (减去均值)
+    # Step 1: Centering (subtract mean)
     centered_states = hidden_states - mu_device
 
-    # 步骤 2: (可选) 应用白化变换
+    # Step 2: (Optional) apply whitening transform
     if W is not None:
         W_device = W.to(device)
 
-        # 使用 einsum 以优雅地处理 2D 和 3D 张量
-        if hidden_states.dim() == 2:  # 形状 (N, D)
+        # Use einsum to handle 2D and 3D tensors elegantly
+        if hidden_states.dim() == 2:  # Shape (N, D)
             # 'nd,cd->nc' -> (N, D) @ (D, D).T = (N, D)
-            # 注意：在 RepEng 中，通常使用 W @ (h-mu)，所以这里是 'cd'
+            # Note: in RepEng, we typically use W @ (h-mu), hence 'cd'
             transformed_states = torch.einsum('nd,cd->nc', centered_states, W_device)
-        elif hidden_states.dim() == 3:  # 形状 (B, N, D)
-            # 'bnd,cd->bnc' -> 对批量中的每个 (N, D) 矩阵执行变换
+        elif hidden_states.dim() == 3:  # Shape (B, N, D)
+            # 'bnd,cd->bnc' -> apply transform to each (N, D) matrix in the batch
             transformed_states = torch.einsum('bnd,cd->bnc', centered_states, W_device)
         else:
-            raise ValueError(f"不支持的隐藏状态维度: {hidden_states.dim()}。只支持 2D 或 3D 张量。")
+            raise ValueError(
+                f"Unsupported hidden state dimensionality: {hidden_states.dim()}. "
+                "Only 2D or 3D tensors are supported."
+            )
 
         return transformed_states
     else:
-        # 如果 W 为 None，则只返回中心化后的结果
+        # If W is None, return the centered result only
         return centered_states
+
 
 def invert_transform(
         transformed_states: torch.Tensor,
         transform: Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]
 ) -> torch.Tensor:
     """
-    将白化/中心化后的表征 (z_t) 反向变换回原始隐藏状态 (h_t)。
-    执行: h_t = W_inv @ z_t + mu
+    Invert the whitened/centered representation (z_t) back to the original
+    hidden state (h_t).
+    Compute: h_t = W_inv @ z_t + mu
 
     Args:
         transformed_states (torch.Tensor):
-            白化空间中的表征 (z_t)。
-            形状可以是 (N, D) 或 (B, N, D)。
+            Representation in whitened space (z_t).
+            Shape can be (N, D) or (B, N, D).
 
         transform (Tuple[Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]):
-            一个元组 `(W, mu, W_inv)`。
+            A tuple `(W, mu, W_inv)`.
 
     Returns:
         torch.Tensor:
-            原始空间中的隐藏状态 (h_t)，形状与输入相同。
+            Hidden states in original space (h_t), same shape as input.
     """
-    _, mu, W_inv = transform # 解包三元组，忽略 W
+    _, mu, W_inv = transform  # Unpack triple, ignore W
     device = transformed_states.device
 
     mu_device = mu.to(device)
 
-    # 步骤 1: (可选) 应用反向白化 W_inv @ z_t
+    # Step 1: (Optional) apply inverse whitening W_inv @ z_t
     if W_inv is not None:
         W_inv_device = W_inv.to(device)
 
-        if transformed_states.dim() == 2:  # 形状 (N, D)
+        if transformed_states.dim() == 2:  # Shape (N, D)
             # 'nd,cd->nc' -> (N, D) @ (D, D).T = (N, D)
-            # 注意: W_inv 是 (D, D)
+            # Note: W_inv is (D, D)
             de_whitened_states = torch.einsum('nd,cd->nc', transformed_states, W_inv_device)
-        elif transformed_states.dim() == 3:  # 形状 (B, N, D)
+        elif transformed_states.dim() == 3:  # Shape (B, N, D)
             # 'bnd,cd->bnc'
             de_whitened_states = torch.einsum('bnd,cd->bnc', transformed_states, W_inv_device)
         else:
-            raise ValueError(f"不支持的隐藏状态维度: {transformed_states.dim()}。只支持 2D 或 3D 张量。")
+            raise ValueError(
+                f"Unsupported hidden state dimensionality: {transformed_states.dim()}. "
+                "Only 2D or 3D tensors are supported."
+            )
     else:
-        # 如果 W_inv 为 None (仅中心化)，则 z_t == h_t - mu
+        # If W_inv is None (center-only), then z_t == h_t - mu
         de_whitened_states = transformed_states
 
-    # 步骤 2: 加回均值
+    # Step 2: add mean back
     original_states = de_whitened_states + mu_device
     return original_states

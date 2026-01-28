@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-该文件实现了“提交缓冲” (Commit Buffer) 机制。
+This file implements the "commit buffer" mechanism.
 
-根据“方法流程.md”文档的阶段 5，为了在检测到有害倾向时能够优雅地回滚，
-而不是将已经部分生成的有害内容暴露给用户，JEDI 引入了提交缓冲。
+According to stage 5 of \"Method Flow.md\", to allow graceful rollback when harmful
+trends are detected (instead of exposing partially generated harmful content),
+JEDI introduces a commit buffer.
 
-`CommitBuffer` 类实现了一个先进先出 (FIFO) 队列，它会暂存最新生成的
-一小段 token 序列。只有当 CUSUM 算法确认当前生成过程安全时，缓冲队列
-头部的 token 才会被“提交”（即可以安全地展示给用户）。一旦触发警报，
-整个缓冲区可以被清空，从而实现无缝回滚。
+The `CommitBuffer` class implements a FIFO queue that temporarily stores the
+most recently generated tokens. Only when the CUSUM algorithm confirms the
+current generation process is safe will tokens at the head of the buffer be
+"committed" (i.e., safely shown to the user). Once an alert triggers, the
+entire buffer can be cleared to enable seamless rollback.
 """
 
 from collections import deque
@@ -18,60 +20,65 @@ import torch
 
 class CommitBuffer:
     """
-    管理一个先进先出 (FIFO) 队列，用于暂存待提交的 token。
+    Manage a FIFO queue for temporarily storing tokens pending commit.
 
-    这个类被设计为按批次 (batch) 工作，为每个并行的生成序列维护一个独立的缓冲区。
+    This class is designed to operate in batches, maintaining an independent
+    buffer for each parallel generation sequence.
     """
 
     def __init__(self, capacity: int, batch_size: int):
         """
-        初始化提交缓冲区。
+        Initialize the commit buffer.
 
         Args:
             capacity (int):
-                每个序列的缓冲区最大容量（可以容纳的 token 数量）。
-                这个值也决定了最大可能的回滚长度。
+                Maximum buffer capacity per sequence (number of tokens).
+                This value also determines the maximum possible rollback length.
 
             batch_size (int):
-                要同时管理的并行生成序列的数量。
+                Number of parallel generation sequences to manage.
         """
         if capacity <= 0:
-            raise ValueError("缓冲区容量必须是正整数。")
+            raise ValueError("Buffer capacity must be a positive integer.")
         self.capacity = capacity
         self.batch_size = batch_size
 
-        # 为批次中的每个序列创建一个独立的双端队列 (deque)
-        # deque 提供了高效的从两端添加和弹出元素的操作
+        # Create a separate deque for each sequence in the batch
+        # deque provides efficient append/pop from both ends
         self.buffers: List[deque] = [deque(maxlen=capacity) for _ in range(batch_size)]
 
     def add(self, tokens: List[Any]):
         """
-        将新生成的 token 添加到对应序列的缓冲区末尾。
+        Add newly generated tokens to the end of each sequence buffer.
 
         Args:
             tokens (List[Any]):
-                一个列表，包含批次中每个序列新生成的 token。
-                列表的长度应等于 `batch_size`。
+                A list containing the newly generated token for each sequence
+                in the batch. Length should equal `batch_size`.
         """
         if len(tokens) != self.batch_size:
-            raise ValueError(f"输入的 token 数量 ({len(tokens)}) 与批次大小 ({self.batch_size}) 不匹配。")
+            raise ValueError(
+                f"Token count ({len(tokens)}) does not match batch size ({self.batch_size})."
+            )
 
         for i in range(self.batch_size):
             self.buffers[i].append(tokens[i])
 
     def commit(self, num_tokens: int = 1) -> List[List[Any]]:
         """
-        从每个序列的缓冲区头部“提交”（即移除并返回）指定数量的 token。
+        Commit (remove and return) a specified number of tokens from the head
+        of each sequence buffer.
 
-        这模拟了将安全的 token 发送给用户的过程。
+        This simulates sending safe tokens to the user.
 
         Args:
             num_tokens (int, optional):
-                要为每个序列提交的 token 数量。默认为 1。
+                Number of tokens to commit per sequence. Defaults to 1.
 
         Returns:
             List[List[Any]]:
-                一个列表，其中每个子列表包含了从对应序列缓冲区提交的 token。
+                A list where each sublist contains the committed tokens from the
+                corresponding sequence buffer.
         """
         committed_batch = [[] for _ in range(self.batch_size)]
         for i in range(self.batch_size):
@@ -79,20 +86,21 @@ class CommitBuffer:
                 if self.buffers[i]:
                     committed_batch[i].append(self.buffers[i].popleft())
                 else:
-                    break  # 如果缓冲区为空，则停止提交
+                    break  # Stop if the buffer is empty
         return committed_batch
 
     def rollback(self, indices: torch.Tensor):
         """
-        清空指定索引的序列的缓冲区。
+        Clear the buffers for specified sequence indices.
 
-        当 CUSUM 检测到有害倾向时调用此方法。
+        This is called when CUSUM detects harmful trends.
 
         Args:
             indices (torch.Tensor):
-                一个布尔或长整型张量，指示哪些序列的缓冲区需要被清空。
+                A boolean or integer tensor indicating which sequence buffers
+                should be cleared.
         """
-        # 将 PyTorch 张量转换为可迭代的索引列表
+        # Convert PyTorch tensor to an iterable list of indices
         if indices.dtype == torch.bool:
             idx_list = indices.nonzero(as_tuple=True)[0]
         else:
@@ -103,14 +111,15 @@ class CommitBuffer:
 
     def flush_all(self) -> List[List[Any]]:
         """
-        清空并返回所有缓冲区中的剩余内容。
+        Clear and return any remaining content in all buffers.
 
-        当一个生成序列正常结束（未触发警报）时调用此方法，以确保
-        所有暂存的 token 都被提交。
+        Called when a generation sequence completes normally (no alert), to
+        ensure all buffered tokens are committed.
 
         Returns:
             List[List[Any]]:
-                一个列表，其中每个子列表包含了从对应序列缓冲区取出的所有剩余 token。
+                A list where each sublist contains all remaining tokens from the
+                corresponding sequence buffer.
         """
         remaining_batch = []
         for i in range(self.batch_size):
