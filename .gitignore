@@ -24,3 +24,5 @@ artifacts/*
 #sample_jailbreaks.py
 scripts/adaptive_evaluation.py
 configs/adaptive_evaluation_config.yaml
+
+scripts/ablation.py
