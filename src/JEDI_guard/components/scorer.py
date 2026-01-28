@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-该文件定义了 `Scorer` 类，其核心职责是计算每个生成 token 的单步“有害度”分数。
+This file defines the `Scorer` class. Its core responsibility is to compute the
+per-token "harmfulness" score for each generated token.
 
-根据“方法流程.md”文档的阶段 4.1，这个分数是通过将经过标准化的隐藏状态
-投影到预先提取的“条件向量” (c_l) 上来得到的。此外，还应用了边界 ReLU
-（即减去一个阈值 `theta` 并取正）来过滤掉良性噪声。
+According to stage 4.1 of \"Method Flow.md\", the score is obtained by projecting
+normalized hidden states onto a pre-extracted "condition vector" (c_l). A
+bounded ReLU (subtracting threshold `theta` and taking the positive part) is
+also applied to filter benign noise.
 
-`Scorer` 类封装了这一逻辑，使得在线防御系统 `Guard` 可以方便地调用它来评估
-每个新生成 token 的风险。
+The `Scorer` class encapsulates this logic so the online defense system `Guard`
+can easily evaluate the risk of each newly generated token.
 """
 
 import torch
@@ -18,7 +20,7 @@ from .representation import apply_transform
 
 class Scorer:
     """
-    计算逐 token 的原始风险分数 (s_t) 和经过阈值处理后的风险分数 (r_t)。
+    Compute per-token raw risk scores (s_t) and thresholded risk scores (r_t).
     """
 
     def __init__(
@@ -29,25 +31,25 @@ class Scorer:
             device: str = 'cpu'
     ):
         """
-        初始化 Scorer 组件。
+        Initialize the Scorer component.
 
         Args:
             condition_vector (torch.Tensor):
-                条件向量 `c_l`，用于检测有害语义。形状为 (D,)。
+                Condition vector `c_l` for detecting harmful semantics. Shape (D,).
 
             transform (Tuple[Optional[torch.Tensor], torch.Tensor]):
-                一个元组 `(W, mu)`，包含用于内容窗口的白化矩阵和均值向量。
-                这是从离线校准阶段加载的产物。
+                A tuple `(W, mu)` containing the whitening matrix and mean vector
+                for the content window. Loaded from the offline calibration stage.
 
             theta (float):
-                分数阈值 `theta`。在计算最终风险分数 `r_t` 之前，
-                会从原始分数 `s_t` 中减去该值。
+                Score threshold `theta`. This value is subtracted from the raw
+                score `s_t` before computing the final risk score `r_t`.
 
             device (str):
-                指定运行计算的设备 (例如, 'cuda:0' 或 'cpu')。
+                Device to run computations on (e.g., 'cuda:0' or 'cpu').
         """
         self.condition_vector = condition_vector.to(device, non_blocking=True)
-        # 将变换矩阵和向量也移动到指定设备
+        # Move transform matrices and vectors to the target device as well
         W, mu, W_inv = transform
         self.transform_gpu = (
             W.to(device, non_blocking=True) if W is not None else None,
@@ -60,34 +62,35 @@ class Scorer:
     @torch.no_grad()
     def calculate_scores(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        为给定的隐藏状态序列计算原始分数和风险分数。
+        Compute raw and risk scores for a given sequence of hidden states.
 
         Args:
             hidden_states (torch.Tensor):
-                一批新生成 token 的隐藏状态。
-                期望形状为 (B, 1, D)，其中 B 是批量大小，D 是隐藏维度。
-                中间的 '1' 代表序列长度为 1（因为我们是逐 token 处理）。
+                Hidden states for a batch of newly generated tokens.
+                Expected shape (B, 1, D), where B is batch size and D is hidden dim.
+                The middle '1' represents sequence length 1 (per-token processing).
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
-            一个元组 `(s_t, r_t)`，其中：
-            - `s_t` (torch.Tensor): 原始投影分数，形状为 (B,)。
-            - `r_t` (torch.Tensor): 经过边界 ReLU 处理后的最终风险分数，形状为 (B,)。
+            A tuple `(s_t, r_t)`, where:
+            - `s_t` (torch.Tensor): Raw projection score, shape (B,).
+            - `r_t` (torch.Tensor): Thresholded risk score, shape (B,).
         """
         if hidden_states.device.type != self.device:
             hidden_states = hidden_states.to(self.device, non_blocking=True)
 
-        # 1. 对隐藏状态进行标准化（白化/中心化）
-        # hidden_states 形状 (B, 1, D) -> transformed_states 形状 (B, 1, D),使用预先移动到 GPU 的 self.transform_gpu
+        # 1. Normalize hidden states (whitening/centering)
+        # hidden_states shape (B, 1, D) -> transformed_states shape (B, 1, D)
+        # using the pre-moved self.transform_gpu
         transformed_states = apply_transform(hidden_states, self.transform_gpu)
 
-        # 2. 将标准化后的表征投影到条件向量上，得到原始分数 s_t
-        # transformed_states 形状 (B, 1, D), condition_vector 形状 (D,)
-        # -> s_t 形状 (B, 1)
+        # 2. Project normalized representations onto the condition vector to get s_t
+        # transformed_states shape (B, 1, D), condition_vector shape (D,)
+        # -> s_t shape (B, 1)
         s_t_unsq = torch.einsum('bnd,d->bn', transformed_states, self.condition_vector)
-        s_t = s_t_unsq.squeeze(1)  # 移除中间的维度 -> (B,)
+        s_t = s_t_unsq.squeeze(1)  # Remove middle dimension -> (B,)
 
-        # 3. 应用边界 ReLU 得到最终的风险分数 r_t
+        # 3. Apply bounded ReLU to get the final risk score r_t
         # r_t = max(0, s_t - theta)
         r_t = torch.clamp(s_t - self.theta, min=0)
 

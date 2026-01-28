@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-工具：日志设置
+Utility: logging setup
 
-提供一个简单的函数来配置 JEDI 包的日志记录。
-这有助于在 `Guard` 运行时提供标准化的、可控的日志输出，
-方便调试和审计。
+Provides a simple function to configure logging for the JEDI package.
+This helps produce standardized, controllable log output when `Guard` runs,
+which is useful for debugging and auditing.
 """
 
 import logging
@@ -13,41 +13,41 @@ import sys
 
 def setup_logging(level=logging.INFO, stream=sys.stdout):
     """
-    配置 JEDI 包（或根日志记录器）的日志记录。
+    Configure logging for the JEDI package (or root logger).
 
     Args:
         level (int, optional):
-            日志级别 (例如, logging.INFO, logging.DEBUG)。
-            默认为 logging.INFO。
+            Log level (e.g., logging.INFO, logging.DEBUG).
+            Defaults to logging.INFO.
         stream (IO, optional):
-            日志输出流。默认为 sys.stdout。
+            Log output stream. Defaults to sys.stdout.
     """
-    # 获取 'JEDI_guard' 包的根日志记录器
-    # 如果在包外部使用，可以改为获取根日志记录器：
+    # Get the root logger for the 'JEDI_guard' package
+    # If using outside the package, you can get the root logger instead:
     # logger = logging.getLogger()
 
     logger = logging.getLogger('JEDI_guard')
     if logger.hasHandlers():
-        # 如果已经配置过，则不再重复配置
+        # If already configured, do not reconfigure
         return
 
     logger.setLevel(level)
 
-    # 创建一个流处理器 (StreamHandler)
+    # Create a stream handler
     handler = logging.StreamHandler(stream)
     handler.setLevel(level)
 
-    # 创建一个格式化器 (Formatter) 并添加到处理器
+    # Create a formatter and add it to the handler
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     handler.setFormatter(formatter)
 
-    # 将处理器添加到日志记录器
+    # Add the handler to the logger
     logger.addHandler(handler)
 
-    # 防止日志消息传播到根日志记录器 (如果根有自己的处理器)
+    # Prevent log messages from propagating to the root logger (if it has handlers)
     logger.propagate = False
 
-    logger.info("RepEng-Guard 日志记录器已初始化。")
+    logger.info("RepEng-Guard logger initialized.")
