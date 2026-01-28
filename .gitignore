@@ -14,7 +14,6 @@ data/processed/*
 data/activations/*
 data/ablation/*
 data/evaluations/plot Guarded Trigger Steps Boxplot.py
-Kernel Density Simulation Visualization.py
 
 # Artifacts
 artifacts/*
