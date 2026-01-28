@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Tuple
 import pandas as pd
 
-# 固定的攻击方法列表（你可以在这里写死 5 个方法名）
+# Fixed list of attack methods (you can hardcode 5 method names here).
 ATTACK_METHODS = [
     "GCG",
     "AutoDAN",
@@ -21,31 +21,31 @@ def _as_path(p) -> Path:
 
 def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
     """
-    读取每个攻击方法下、指定 LLM 的 json，筛选 label==1 的样本。
-    返回按攻击方法分桶的候选列表。
+    Read per-attack JSON for the specified LLM and filter samples with label==1.
+    Return candidate lists bucketed by attack method.
     """
     root = _as_path(root)
     buckets: Dict[str, List[Dict[str, Any]]] = {a: [] for a in ATTACK_METHODS}
 
     for attack in ATTACK_METHODS:
         if attack == "HumanJailbreaks":
-            # 人工越狱单独存放在 root/human_jailbreaks/llm/results/llm.json
+            # Human jailbreaks are stored at root/human_jailbreaks/llm/results/llm.json.
             json_path = root / attack / "default" / "results" / f"{llm}.json"
         else:
             json_path = root / attack / llm / "results" / f"{llm}.json"
         if not json_path.exists():
-            print(f"[WARN] 文件不存在：{json_path}")
+            print(f"[WARN] File not found: {json_path}")
             continue
 
         try:
             with json_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            print(f"[WARN] 读取失败：{json_path}，错误：{e}")
+            print(f"[WARN] Failed to read: {json_path}, error: {e}")
             continue
 
         if not isinstance(data, dict):
-            print(f"[WARN] 非预期结构（顶层不是 dict）：{json_path}")
+            print(f"[WARN] Unexpected structure (top-level is not dict): {json_path}")
             continue
 
         for key, items in data.items():
@@ -58,13 +58,13 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
                 if not prompt_text:
                     continue
 
-                # 从 behaviors_df 中查找行为
+                # Look up the behavior in behaviors_df.
                 try:
                     behavior = behaviors_df.loc[key, 'Behavior']
                     FunctionalCategory = behaviors_df.loc[key, 'FunctionalCategory']
                 except KeyError:
-                    print(f"[WARN] 在行为文件中未找到 BehaviorID '{key}'。")
-                    continue # 跳过未找到的行为
+                    print(f"[WARN] BehaviorID '{key}' not found in behaviors file.")
+                    continue  # Skip behaviors that are not found.
 
                 buckets[attack].append({
                     "behavior": behavior,
@@ -82,9 +82,9 @@ def load_by_attack(root, llm, behaviors_df: pd.DataFrame) -> Dict[str, List[Dict
 
 def _plan_quota(buckets: Dict[str, List[Dict[str, Any]]], n_total: int, seed: int) -> Dict[str, int]:
     """
-    计算每个攻击方法应采样的数量：
-    1) 初始等额平均分配（含余数，按回合分配给样本更充足的桶）
-    2) 若某桶候选不足，取其上限，缺口再按“剩余可用量”大的桶分配
+    Compute the sample count for each attack method:
+    1) Start with equal allocation (including remainder, distributed to larger buckets)
+    2) If a bucket lacks candidates, cap it and reassign the deficit to buckets with spare
     """
     random.seed(seed)
     attacks = list(buckets.keys())
@@ -92,17 +92,17 @@ def _plan_quota(buckets: Dict[str, List[Dict[str, Any]]], n_total: int, seed: in
     base = n_total // k
     rem = n_total % k
 
-    # 初次分配：每桶 base，余数 rem 轮流分配（优先候选更多者）
-    # 排序仅用于分配余数，不影响后续再分配
+    # Initial allocation: base per bucket, remainder to larger buckets.
+    # Sorting only affects remainder allocation and not later redistribution.
     by_capacity = sorted(attacks, key=lambda a: len(buckets[a]), reverse=True)
     quota = {a: base for a in attacks}
     for a in by_capacity[:rem]:
         quota[a] += 1
 
-    # 若不足，再分配
+    # If there is a shortage, redistribute.
     while True:
         shortage = 0
-        donors: List[Tuple[str, int]] = []  # (attack, 可再给出的数量)
+        donors: List[Tuple[str, int]] = []  # (attack, additional available count)
         for a in attacks:
             cap = len(buckets[a])
             if quota[a] > cap:
@@ -118,10 +118,10 @@ def _plan_quota(buckets: Dict[str, List[Dict[str, Any]]], n_total: int, seed: in
                 donors.append((a, spare))
 
         if not donors:
-            # 所有桶都已经到上限了，无法满足 n_total，结束
+            # All buckets are at capacity and cannot satisfy n_total.
             break
 
-        # 依据 spare 大小排序，从 spare 多的开始补
+        # Sort by spare capacity and fill from the largest.
         donors.sort(key=lambda x: x[1], reverse=True)
         i = 0
         while shortage > 0 and donors:
@@ -141,38 +141,40 @@ def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: i
     out = _as_path(out) if out else Path(f"{llm}_sampled_equal.json")
     random.seed(seed)
 
-    # 加载 behaviors csv
+    # Load behaviors CSV.
     try:
         behaviors_df = pd.read_csv(behaviors_path)
-        # 假设 CSV 文件有 'BehaviorID' 和 'Behavior' 列
-        # 并且 json 文件中的键（如 'queer_lgbtq_harassment_text'）是 BehaviorID
+        # Assume the CSV has 'BehaviorID' and 'Behavior' columns.
+        # JSON keys (e.g., 'queer_lgbtq_harassment_text') are BehaviorID values.
         behaviors_df.set_index('BehaviorID', inplace=True)
     except FileNotFoundError:
-        print(f"[ERROR] 在路径中未找到行为文件： {behaviors_path}")
+        print(f"[ERROR] Behaviors file not found at path: {behaviors_path}")
         return
     except KeyError:
-        print(f"[ERROR] 行为文件必须包含 'BehaviorID' 列。")
+        print("[ERROR] Behaviors file must contain a 'BehaviorID' column.")
         return
 
     buckets = load_by_attack(root, llm, behaviors_df)
     total_candidates = sum(len(v) for v in buckets.values())
     if total_candidates == 0:
-        raise RuntimeError("未找到任何 label==1 的越狱提示，请检查路径与数据。")
+        raise RuntimeError(
+            "No label==1 jailbreak prompts were found. Please check paths and data."
+        )
 
     target_n = min(n, total_candidates)
     quota = _plan_quota(buckets, target_n, seed)
 
-    # 按每桶配额进行无放回随机抽样
+    # Sample without replacement based on per-bucket quotas.
     records: List[Dict[str, Any]] = []
     for attack, q in quota.items():
         if q <= 0 or len(buckets[attack]) == 0:
             continue
-        # 为了可复现，先打乱，再取前 q
+        # Shuffle first for reproducibility, then take the first q.
         items = buckets[attack][:]
         random.shuffle(items)
         records.extend(items[:q])
 
-    # 若因极端不足导致凑不满 target_n（极少见），再全局补齐
+    # If extreme shortages prevent reaching target_n (rare), fill globally.
     if len(records) < target_n:
         remaining = []
         for attack, items in buckets.items():
@@ -195,23 +197,43 @@ def sample_equal(llm: str, root: str, behaviors_path: str, n: int = 100, seed: i
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
-    print(f"完成：总候选 {total_candidates}，按等量策略采样 {len(records)} 条 → {out}")
-    print("每个攻击方法分配：", {k: v for k, v in quota.items() if v > 0})
+    print(
+        f"Done: {total_candidates} total candidates, sampled {len(records)} with equal strategy -> {out}"
+    )
+    print("Allocation per attack method:", {k: v for k, v in quota.items() if v > 0})
 
 
 if __name__ == "__main__":
-    # 修改 root 和 llm 名称即可
-    llm = "llama2_7b"
+    import argparse
 
-    # 定义 behaviors csv 文件路径
-    # 用户应将 'harmbench_behaviors_text_all.csv' 文件放在此处
-    behaviors_csv_path = "../../harmbench_results_initial_release/harmbench_results_initial_release/harmbench_behaviors_text_all.csv"
+    parser = argparse.ArgumentParser(description="Sample jailbreak prompts by attack method.")
+    parser.add_argument("--llm", required=True, help="LLM name used to locate result files.")
+    parser.add_argument(
+        "--behaviors-csv",
+        default="../../harmbench_results_initial_release/harmbench_results_initial_release/harmbench_behaviors_text_all.csv",
+        help="Path to harmbench behaviors CSV.",
+    )
+    parser.add_argument(
+        "--root",
+        default="../../harmbench_results_initial_release/harmbench_results_initial_release/results_text",
+        help="Root directory for attack results.",
+    )
+    parser.add_argument("--n", type=int, default=100, help="Sample size.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output JSON path. Defaults to data/raw/<llm>_sampled_jailbreaks.json.",
+    )
+    args = parser.parse_args()
+
+    output_path = Path(args.out) if args.out else Path("data/raw") / f"{args.llm}_sampled_jailbreaks.json"
 
     sample_equal(
-        llm=llm,  # 指定 LLM 名称
-        root="../../harmbench_results_initial_release/harmbench_results_initial_release/results_text",  # 根目录路径
-        behaviors_path=behaviors_csv_path,  # behaviors csv 的路径
-        n=100,  # 采样数
-        seed=42,  # 随机种子
-        out=Path("data/raw/" + llm + "_sampled_jailbreaks.json"),
+        llm=args.llm,  # LLM name.
+        root=args.root,  # Root directory path.
+        behaviors_path=args.behaviors_csv,  # Path to behaviors CSV.
+        n=args.n,  # Sample size.
+        seed=args.seed,  # Random seed.
+        out=output_path,
     )
