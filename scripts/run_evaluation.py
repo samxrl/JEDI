@@ -82,6 +82,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """Return True when the loaded tokenizer belongs to the Qwen3 series."""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """Apply chat template with Qwen3-specific compatibility options."""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 def load_model_and_tokenizer(model_name: str, model_kwargs: dict, device: str) -> tuple:
     """Load the Hugging Face model and tokenizer."""
     logger.info(f"Loading model:{model_name}...")
@@ -396,7 +409,8 @@ def run_generation(
                     [{"role": "user", "content": p}] for p in batch_prompts
                 ]
                 input_texts = [
-                    tokenizer.apply_chat_template(
+                    apply_chat_template_compat(
+                        tokenizer,
                         conv, tokenize=False, add_generation_prompt=True
                     )
                     for conv in conversations

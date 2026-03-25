@@ -33,6 +33,19 @@ from JEDI_guard.guard import Guard, JEDILogitsProcessor as BaseJEDI
 logger = logging.getLogger(__name__)
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """Return True when the loaded tokenizer belongs to the Qwen3 series."""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """Apply chat template with Qwen3-specific compatibility options."""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 @dataclass
 class JediFeedback:
     """Unified JEDI feedback fields."""
@@ -254,17 +267,20 @@ class AdaptiveGCG:
                 "The prompt content contains suffix marker, please replace marker or clean up the input."
             )
 
-        prompt_ids = self.tokenizer.apply_chat_template(
+        prompt_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=False,
         )
-        prompt_with_marker_ids = self.tokenizer.apply_chat_template(
+        prompt_with_marker_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt + marker_text}],
             tokenize=True,
             add_generation_prompt=False,
         )
-        prompt_with_gen_ids = self.tokenizer.apply_chat_template(
+        prompt_with_gen_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,

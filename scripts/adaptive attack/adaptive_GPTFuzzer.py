@@ -37,6 +37,20 @@ logger = logging.getLogger(__name__)
 
 QUESTION_PLACEHOLDER = "<QUESTION>"
 
+
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """Return True when the loaded tokenizer belongs to the Qwen3 series."""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """Apply chat template with Qwen3-specific compatibility options."""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 REFUSAL_PHRASES = [
     "I'm sorry",
     "Sorry",
@@ -408,7 +422,8 @@ class AdaptiveGPTFuzzer:
         )
 
     def _format_chat(self, content: str, add_generation_prompt: bool = False) -> str:
-        return self.tokenizer.apply_chat_template(
+        return apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": content}],
             tokenize=False,
             add_generation_prompt=add_generation_prompt,

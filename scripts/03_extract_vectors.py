@@ -45,6 +45,19 @@ logging.basicConfig(
 )
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """Return True when the loaded tokenizer belongs to the Qwen3 series."""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """Apply chat template with Qwen3-specific compatibility options."""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 def load_and_filter_data(
     data_dir: Path, llm_name: str, dataset_name: str
 ) -> tuple[dict, pd.DataFrame]:
@@ -461,7 +474,8 @@ def calculate_and_save_token_scores(
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": assistant_output},
                 ]
-                full_text = tokenizer.apply_chat_template(
+                full_text = apply_chat_template_compat(
+                    tokenizer,
                     full_conversation, tokenize=False, add_generation_prompt=False
                 )
                 full_input_texts.append(full_text)
