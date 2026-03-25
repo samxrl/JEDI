@@ -37,6 +37,19 @@ from typing import List, Dict, Any
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """判断当前 tokenizer 是否属于 Qwen3 系列。"""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """对 Qwen3 系列关闭 thinking 模式，其余模型保持原行为。"""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 def find_subsequence(main_list: List[int], sub_list: List[int]) -> int:
     """
     在主列表中查找子列表的起始索引。
@@ -149,7 +162,9 @@ def process_batch(
     # --- 统一构建输入文本 ---
     full_input_texts = []
     for conv in conversations:
-        text = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
+        text = apply_chat_template_compat(
+            tokenizer, conv, tokenize=False, add_generation_prompt=False
+        )
         if tokenizer.eos_token:
             text = text.rstrip()
             if text.endswith(tokenizer.eos_token):

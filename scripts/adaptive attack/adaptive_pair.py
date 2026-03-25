@@ -40,6 +40,19 @@ from JEDI_guard.guard import Guard, JEDILogitsProcessor as BaseJEDI
 logger = logging.getLogger(__name__)
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """判断当前 tokenizer 是否属于 Qwen3 系列。"""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """对 Qwen3 系列关闭 thinking 模式，其余模型保持原行为。"""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 def roleplaying_prompt() -> str:
     """PAIR 攻击使用的角色扮演系统提示词。"""
 
@@ -372,7 +385,8 @@ class LocalHFClient:
         )
 
     def chat(self, messages: List[Dict[str, str]]) -> str:
-        formatted_input = self.tokenizer.apply_chat_template(
+        formatted_input = apply_chat_template_compat(
+            self.tokenizer,
             messages, tokenize=False, add_generation_prompt=True
         )
 
@@ -480,7 +494,8 @@ class AdaptivePAIR:
 
     def _eval_with_guard(self, attack_prompt: str) -> Tuple[str, JediFeedback, int]:
         conversation = [{"role": "user", "content": attack_prompt}]
-        formatted_input = self.tokenizer.apply_chat_template(
+        formatted_input = apply_chat_template_compat(
+            self.tokenizer,
             conversation,
             tokenize=False,
             add_generation_prompt=True,

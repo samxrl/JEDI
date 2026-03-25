@@ -35,6 +35,19 @@ from JEDI_guard.guard import Guard, JEDILogitsProcessor as BaseJEDI
 logger = logging.getLogger(__name__)
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """判断当前 tokenizer 是否属于 Qwen3 系列。"""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """对 Qwen3 系列关闭 thinking 模式，其余模型保持原行为。"""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 @dataclass
 class JediFeedback:
     """统一的 JEDI 反馈字段。"""
@@ -253,17 +266,20 @@ class AdaptiveGCG:
         if marker_text in prompt:
             raise ValueError("prompt 内容包含 suffix marker，请替换 marker 或清理输入。")
 
-        prompt_ids = self.tokenizer.apply_chat_template(
+        prompt_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=False,
         )
-        prompt_with_marker_ids = self.tokenizer.apply_chat_template(
+        prompt_with_marker_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt + marker_text}],
             tokenize=True,
             add_generation_prompt=False,
         )
-        prompt_with_gen_ids = self.tokenizer.apply_chat_template(
+        prompt_with_gen_ids = apply_chat_template_compat(
+            self.tokenizer,
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,

@@ -45,6 +45,19 @@ from typing import Dict, List
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+def is_qwen3_tokenizer(tokenizer) -> bool:
+    """判断当前 tokenizer 是否属于 Qwen3 系列。"""
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "qwen3" in tokenizer_name
+
+
+def apply_chat_template_compat(tokenizer, conversation, **kwargs):
+    """对 Qwen3 系列关闭 thinking 模式，其余模型保持原行为。"""
+    if is_qwen3_tokenizer(tokenizer):
+        kwargs["enable_thinking"] = False
+    return tokenizer.apply_chat_template(conversation, **kwargs)
+
+
 def load_and_filter_data(data_dir: Path, llm_name: str, dataset_name: str) -> tuple[dict, pd.DataFrame]:
     """
     加载激活张量和对应的带标签的 CSV 文件，并根据标签进行过滤。
@@ -382,7 +395,12 @@ def calculate_and_save_token_scores(
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": assistant_output}
                 ]
-                full_text = tokenizer.apply_chat_template(full_conversation, tokenize=False, add_generation_prompt=False)
+                full_text = apply_chat_template_compat(
+                    tokenizer,
+                    full_conversation,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
                 full_input_texts.append(full_text)
 
                 # 2. 单独对 assistant_output 分词，用于后续搜索
