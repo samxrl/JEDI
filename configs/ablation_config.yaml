@@ -62,15 +62,21 @@ utility_dataset_config:
 #      prompt_column: "prompt" # 此文件的提示列名
 
     # 您可以在此处添加更多数据集...
-    - name: "alpaca_eval"
-      filename: "alpaca_eval.json"
-      prompt_column: "instruction"
-      max_new_tokens: 2048
+     - name: "alpaca_eval"
+       filename: "alpaca_eval.json"
+       prompt_column: "instruction"
+       max_new_tokens: 2048
 
-    - name: "xstest"
-      filename: "xstest_prompts.csv"
-      prompt_column: "prompt"
-      max_new_tokens: 512
+     - name: "or_bench"
+       filename: "or-bench-80k-sample-1000-seed42.csv"
+       prompt_column: "prompt"
+       max_new_tokens: 512
+       fpr_strategy: "refusal_keywords"
+
+     - name: "xstest"
+       filename: "xstest_prompts.csv"
+       prompt_column: "prompt"
+       max_new_tokens: 512
 
 # 用于评估“安全性”
 safety_dataset_config:
