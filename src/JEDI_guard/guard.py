@@ -178,7 +178,7 @@ class JEDILogitsProcessor(LogitsProcessor):
 
             # 5a. Compute dynamic Betas
             # (A_t / alpha) clamped at 1.0 then raised to gamma
-            ratios = (A_t_device[active_indices] / self.alpha).clamp(min=1.0)
+            ratios = (A_t_device[active_indices] / self.alpha)
             gamma = 5  # or 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_betas[active_indices] = self.base_beta * ratios
@@ -318,7 +318,7 @@ class Guard:
         intervention_vector = artifacts['intervention_vectors'][layer_id]
 
         # [!] Load *base* beta from defense_params.yaml
-        base_beta = params.get('beta', 2.0)  # Try key 'beta'
+        base_beta = params.get('beta', 1.0)  # Try key 'beta'
         if 'intervention_beta' in params:  # Fallback key
             base_beta = params.get('intervention_beta', base_beta)
 
