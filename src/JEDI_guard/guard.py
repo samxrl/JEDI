@@ -167,7 +167,7 @@ class JEDILogitsProcessor(LogitsProcessor):
 
             # 5a. 计算动态 Betas
             # (A_t / alpha)  clamped at 1.0 然后取 gamma 次方
-            ratios = (A_t_device[active_indices] / self.alpha).clamp(min=1.0)
+            ratios = (A_t_device[active_indices] / self.alpha)
             gamma = 5  # 或 1.5
             ratios = ratios.pow(gamma)
             self.dynamic_betas[active_indices] = self.base_beta * ratios
@@ -295,7 +295,7 @@ class Guard:
         intervention_vector = artifacts['intervention_vectors'][layer_id]
 
         # [!] 从 defense_params.yaml 加载 *基础* beta
-        base_beta = params.get('beta', 2.0)  # 尝试键 'beta'
+        base_beta = params.get('beta', 1.0)  # 尝试键 'beta'
         if 'intervention_beta' in params:  # 备用键
             base_beta = params.get('intervention_beta', base_beta)
 
