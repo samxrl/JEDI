@@ -121,7 +121,7 @@ data/processed/
 > Note: Use the pre-sampled jailbreak prompts in `data/raw`, or run `sample_jailbreaks.py` to sample jailbreak prompts for your model:
 > 
 > ```shell
-> python sample_jailbreaks.py ----llm <llm_name>
+> python sample_jailbreaks.py --llm <llm_name>
 > ```
 
 **Step 2: Build artifacts (activations → vectors → calibration)**
