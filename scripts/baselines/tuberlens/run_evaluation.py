@@ -459,6 +459,11 @@ def main():
         summary_path = output_dir / f"{llm_name}_tuberlens_evaluation_summary_utility_{dataset_name}.json"
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+        logger.info(
+            f"可用性 (FPR) for {dataset_name} - "
+            f"TuberLens: {metrics['rate']:.4f}, "
+            f"TriggerRate: {metrics.get('trigger_rate', 0.0):.4f}"
+        )
 
         if dataset_name == 'alpaca_eval':
             # 复用主脚本生态：导出 Alpaca Eval 标准格式
@@ -487,12 +492,14 @@ def main():
         summary_path = output_dir / f"{llm_name}_tuberlens_evaluation_summary_attack_{method}.json"
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+        logger.info(
+            f"安全性 (ASR) for {method} - "
+            f"TuberLens: {metrics['rate']:.4f}, "
+            f"TriggerRate: {metrics.get('trigger_rate', 0.0):.4f}"
+        )
 
     logger.info('TuberLens baseline 评估完成。')
 
 
 if __name__ == '__main__':
     main()
-    pooling = str(config.get("probe_config", {}).get("hidden_state_pooling", "mean")).strip().lower()
-    if pooling not in {"mean", "last_token"}:
-        raise ValueError(f"不支持的 hidden_state_pooling: {pooling}。仅支持 'mean' 或 'last_token'。")
