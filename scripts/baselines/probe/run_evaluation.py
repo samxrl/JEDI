@@ -75,14 +75,12 @@ class probeProbe:
     - layer_id: 使用哪一层隐藏状态
     - threshold: 触发拒答阈值（基于 benign 分位数）
     - clf/mean/std: 线性分类器与标准化参数
-    - pooling: token 级聚合策略（mean / last_token）
     """
     layer_id: int
     threshold: float
     clf: LogisticRegression
     mean: np.ndarray
     std: np.ndarray
-    pooling: str = "mean"
 
     def score(self, features: np.ndarray) -> np.ndarray:
         z = (features - self.mean) / self.std
@@ -97,25 +95,31 @@ def _load_activation_file(path: Path) -> Optional[dict]:
     return torch.load(path, map_location='cpu')
 
 
-def _extract_content_window(data: dict, layer: int, pooling: str = "mean") -> Optional[np.ndarray]:
+def _find_subsequence(main_list: List[int], sub_list: List[int]) -> int:
+    if not sub_list:
+        return -1
+    main_len = len(main_list)
+    sub_len = len(sub_list)
+    for i in range(main_len - sub_len + 1):
+        if main_list[i:i + sub_len] == sub_list:
+            return i
+    return -1
+
+
+def _extract_early_window_first_token(data: dict, layer: int) -> Optional[np.ndarray]:
     layer_data = data.get(layer)
     if not isinstance(layer_data, dict):
         return None
-    tensor = layer_data.get('content_window')
+    tensor = layer_data.get('early_window')
     if tensor is None or tensor.numel() == 0:
         return None
-    # 支持通过配置控制 token 级聚合方式：
-    # - mean: 在 token 维 (T) 上取均值
-    # - last_token: 取最后一个 token
-    # 对于 (N, D) 的预聚合输入直接使用。
     if tensor.dim() == 3:
-        if pooling == "last_token":
-            tensor = tensor[:, -1, :]
-        else:
-            tensor = tensor.mean(dim=1)
+        tensor = tensor[:, 0, :]
     elif tensor.dim() != 2:
         return None
-    return tensor.detach().cpu().numpy().astype(np.float32)
+    # NumPy does not support direct conversion from torch.bfloat16.
+    # Cast in PyTorch first, then convert to NumPy.
+    return tensor.detach().to(dtype=torch.float32, device='cpu').numpy()
 
 
 def train_probe_probe(config: dict) -> probeProbe:
@@ -147,14 +151,11 @@ def train_probe_probe(config: dict) -> probeProbe:
 
     best: Optional[probeProbe] = None
     best_auc = -1.0
-    pooling = str(config.get("probe_config", {}).get("hidden_state_pooling", "mean")).strip().lower()
-    if pooling not in {"mean", "last_token"}:
-        raise ValueError(f"不支持的 hidden_state_pooling: {pooling}。仅支持 'mean' 或 'last_token'。")
 
     for layer in common_layers:
         # 为当前层构建二分类训练数据：compliance=1, benign=0
-        x_pos = _extract_content_window(compliance_data, layer, pooling=pooling)
-        x_neg = _extract_content_window(benign_data, layer, pooling=pooling)
+        x_pos = _extract_early_window_first_token(compliance_data, layer)
+        x_neg = _extract_early_window_first_token(benign_data, layer)
         if x_pos is None or x_neg is None:
             continue
 
@@ -190,7 +191,6 @@ def train_probe_probe(config: dict) -> probeProbe:
                 clf=clf,
                 mean=mean,
                 std=std,
-                pooling=pooling,
             )
 
     if best is None:
@@ -198,6 +198,101 @@ def train_probe_probe(config: dict) -> probeProbe:
 
     logger.info(f"选择层 {best.layer_id} 作为 probe baseline probe（train AUC={best_auc:.4f}）")
     return best
+
+
+def save_probe_artifacts(probe: probeProbe, model_name: str) -> Path:
+    """
+    将训练后的 probe 参数保存到 scripts/baselines/probe/data/<model_name>。
+    保存内容包含：
+    - 阈值、层号、特征提取配置
+    - 标准化参数 mean/std
+    - 线性分类器权重与偏置
+    """
+    artifact_dir = BASE_DIR / 'scripts' / 'baselines' / 'probe' / 'data' / model_name
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact = {
+        'model_name': model_name,
+        'layer_id': probe.layer_id,
+        'threshold': probe.threshold,
+        'feature_source': 'train_early_window_first_token__online_prompt_last_token',
+        'mean': probe.mean,
+        'std': probe.std,
+        'clf': {
+            'class_name': probe.clf.__class__.__name__,
+            'params': probe.clf.get_params(),
+            'classes_': probe.clf.classes_,
+            'coef_': probe.clf.coef_,
+            'intercept_': probe.clf.intercept_,
+            'n_features_in_': getattr(probe.clf, 'n_features_in_', None),
+        },
+    }
+
+    artifact_path = artifact_dir / 'probe.pt'
+    torch.save(artifact, artifact_path)
+
+    summary_path = artifact_dir / 'probe_summary.json'
+    summary = {
+        'model_name': model_name,
+        'layer_id': probe.layer_id,
+        'threshold': probe.threshold,
+        'feature_source': 'train_early_window_first_token__online_prompt_last_token',
+        'artifact_path': str(artifact_path),
+    }
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"已保存 probe 工件: {artifact_path}")
+    logger.info(f"已保存 probe 摘要: {summary_path}")
+    return artifact_dir
+
+
+def load_probe_artifacts(model_name: str) -> Optional[probeProbe]:
+    """
+    从 scripts/baselines/probe/data/<model_name> 加载已保存的 probe。
+    仅当 probe.pt 和 probe_summary.json 同时存在时才视为可复用。
+    """
+    artifact_dir = BASE_DIR / 'scripts' / 'baselines' / 'probe' / 'data' / model_name
+    artifact_path = artifact_dir / 'probe.pt'
+    summary_path = artifact_dir / 'probe_summary.json'
+
+    if not artifact_path.exists() or not summary_path.exists():
+        return None
+
+    payload = torch.load(artifact_path, map_location='cpu')
+    if payload.get('feature_source') != 'train_early_window_first_token__online_prompt_last_token':
+        logger.info(f"已忽略旧版 probe 工件（特征来源不匹配）: {artifact_path}")
+        return None
+    clf_payload = payload['clf']
+
+    clf = LogisticRegression(**clf_payload['params'])
+    clf.classes_ = np.asarray(clf_payload['classes_'])
+    clf.coef_ = np.asarray(clf_payload['coef_'])
+    clf.intercept_ = np.asarray(clf_payload['intercept_'])
+    if clf_payload.get('n_features_in_') is not None:
+        clf.n_features_in_ = int(clf_payload['n_features_in_'])
+
+    probe = probeProbe(
+        layer_id=int(payload['layer_id']),
+        threshold=float(payload['threshold']),
+        clf=clf,
+        mean=np.asarray(payload['mean']),
+        std=np.asarray(payload['std']),
+    )
+    logger.info(f"已加载 probe 工件: {artifact_path}")
+    return probe
+
+
+def get_or_train_probe(config: dict) -> probeProbe:
+    model_name = config['llm_name']
+    probe = load_probe_artifacts(model_name)
+    if probe is not None:
+        return probe
+
+    logger.info(f"未找到可复用的 probe 工件，开始为 {model_name} 训练并校准新 probe")
+    probe = train_probe_probe(config)
+    save_probe_artifacts(probe, model_name)
+    return probe
 
 
 @torch.no_grad()
@@ -210,13 +305,17 @@ def _prompt_is_harmful(model, tokenizer, prompt: str, probe: probeProbe) -> bool
     text = apply_chat_template_compat(tokenizer, conv, tokenize=False, add_generation_prompt=True)
 
     inputs = tokenizer(text, return_tensors='pt', padding=False, truncation=True).to(model.device)
+    prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    input_ids = inputs['input_ids'][0].detach().cpu().tolist()
+    prompt_start_idx = _find_subsequence(input_ids, prompt_ids)
+    if prompt_start_idx == -1:
+        raise ValueError("无法在模型输入中定位用户 prompt 对应的 early_window 区间。")
+    prompt_end_idx = prompt_start_idx + len(prompt_ids) - 1
+
     outputs = model(**inputs, output_hidden_states=True, use_cache=False)
 
     hidden = outputs.hidden_states[probe.layer_id + 1]  # hidden_states[0] 为 embedding
-    if probe.pooling == "last_token":
-        feat = hidden[:, -1, :].detach().float().cpu().numpy()
-    else:
-        feat = hidden.mean(dim=1).detach().float().cpu().numpy()
+    feat = hidden[:, prompt_end_idx, :].detach().float().cpu().numpy()
     score = probe.score(feat)[0]
     return bool(score >= probe.threshold)
 
@@ -342,7 +441,7 @@ def main():
     run_utility = config.get('run_utility_evaluation', True)
     run_safety = config.get('run_safety_evaluation', True)
 
-    probe = train_probe_probe(config)
+    probe = get_or_train_probe(config)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     llm_config = config['llm_config']

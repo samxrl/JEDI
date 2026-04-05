@@ -24,3 +24,4 @@ artifacts/*
 #sample_jailbreaks.py
 scripts/adaptive_evaluation.py
 configs/adaptive_evaluation_config.yaml
+scripts/baselines/probe/PROBE_TRAINING_AND_CALIBRATION.md

@@ -26,10 +26,6 @@ output_dir: "scripts/baselines/probe/evaluations"
 
 probe_config:
   threshold_quantile: 0.95
-  # 可选: "mean" | "last_token"
-  # - mean: 使用所有 token 隐藏状态的平均值
-  # - last_token: 使用最后一个 token 的隐藏状态
-  hidden_state_pooling: "mean"
   refusal_message: "I'm sorry, I can't help with that request."
 
 utility_dataset_config:
