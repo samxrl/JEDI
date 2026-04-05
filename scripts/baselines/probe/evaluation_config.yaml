@@ -1,4 +1,4 @@
-# TuberLens baseline evaluation config
+# probe baseline evaluation config
 llm_name: "vicuna_7b_v1_5"
 
 run_utility_evaluation: true
@@ -22,7 +22,7 @@ classifier_config:
 activations_dir: "data/activations"
 
 data_dir: "data/raw"
-output_dir: "data/evaluations_tuberlens"
+output_dir: "data/evaluations_probe"
 
 probe_config:
   threshold_quantile: 0.95

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-TuberLens baseline evaluation script.
+probe baseline evaluation script.
 
 目标：
-1. 在不修改现有项目文件的前提下，复现一个基于单层激活探针（TuberLens 风格）的防御基线；
+1. 在不修改现有项目文件的前提下，复现一个基于单层激活探针（probe 风格）的防御基线；
 2. 复用项目已有评估数据加载、分类与统计逻辑；
 3. 输出与 scripts/run_evaluation.py 同类评估结果（utility + safety），但不与 JEDI 对比。
 """
@@ -69,7 +69,7 @@ LLAMA2_CLS_PROMPT = judge_module.LLAMA2_CLS_PROMPT
 
 
 @dataclass
-class TuberLensProbe:
+class probeProbe:
     """
     训练完成后的探针对象。
     - layer_id: 使用哪一层隐藏状态
@@ -118,9 +118,9 @@ def _extract_content_window(data: dict, layer: int, pooling: str = "mean") -> Op
     return tensor.detach().cpu().numpy().astype(np.float32)
 
 
-def train_tuberlens_probe(config: dict) -> TuberLensProbe:
+def train_probe_probe(config: dict) -> probeProbe:
     """
-    训练 TuberLens 风格单层 probe：
+    训练 probe 风格单层 probe：
     1) 读取 compliance / benign 激活
     2) 对每个候选层训练 logistic regression
     3) 依据训练 AUC 选择最佳层
@@ -137,7 +137,7 @@ def train_tuberlens_probe(config: dict) -> TuberLensProbe:
 
     if compliance_data is None or benign_data is None:
         raise FileNotFoundError(
-            "缺少训练 TuberLens probe 所需激活文件。"
+            "缺少训练 probe probe 所需激活文件。"
             "请先完成 scripts/02_extract_activations.py 与 scripts/03_extract_vectors.py 相关流程。"
         )
 
@@ -145,7 +145,7 @@ def train_tuberlens_probe(config: dict) -> TuberLensProbe:
     if not common_layers:
         raise ValueError("在 compliance/benign 激活中没有共同层可用于训练 probe。")
 
-    best: Optional[TuberLensProbe] = None
+    best: Optional[probeProbe] = None
     best_auc = -1.0
     pooling = str(config.get("probe_config", {}).get("hidden_state_pooling", "mean")).strip().lower()
     if pooling not in {"mean", "last_token"}:
@@ -184,7 +184,7 @@ def train_tuberlens_probe(config: dict) -> TuberLensProbe:
 
         if auc > best_auc:
             best_auc = auc
-            best = TuberLensProbe(
+            best = probeProbe(
                 layer_id=int(layer),
                 threshold=threshold,
                 clf=clf,
@@ -194,14 +194,14 @@ def train_tuberlens_probe(config: dict) -> TuberLensProbe:
             )
 
     if best is None:
-        raise ValueError("未能训练出可用的 TuberLens probe（请检查激活文件内容）。")
+        raise ValueError("未能训练出可用的 probe probe（请检查激活文件内容）。")
 
-    logger.info(f"选择层 {best.layer_id} 作为 TuberLens baseline probe（train AUC={best_auc:.4f}）")
+    logger.info(f"选择层 {best.layer_id} 作为 probe baseline probe（train AUC={best_auc:.4f}）")
     return best
 
 
 @torch.no_grad()
-def _prompt_is_harmful(model, tokenizer, prompt: str, probe: TuberLensProbe) -> bool:
+def _prompt_is_harmful(model, tokenizer, prompt: str, probe: probeProbe) -> bool:
     """
     对单条 prompt 进行探针检测。
     注意：这里在“生成前”检测；若判为有害将直接拒答。
@@ -222,13 +222,13 @@ def _prompt_is_harmful(model, tokenizer, prompt: str, probe: TuberLensProbe) -> 
 
 
 @torch.no_grad()
-def run_tuberlens_generation(
+def run_probe_generation(
     model,
     tokenizer,
     prompts: List[str],
     gen_config: GenerationConfig,
     batch_size: int,
-    probe: TuberLensProbe,
+    probe: probeProbe,
     refusal_message: str,
 ) -> Tuple[List[str], List[int]]:
     """
@@ -241,7 +241,7 @@ def run_tuberlens_generation(
     trigger_steps: List[int] = []
 
     # 为了尽量复用项目生成行为，仍按 batch 遍历；检测在样本级进行。
-    for i in tqdm(range(0, len(prompts), batch_size), desc='运行 TuberLens 生成'):
+    for i in tqdm(range(0, len(prompts), batch_size), desc='运行 probe 生成'):
         batch_prompts = prompts[i:i + batch_size]
 
         safe_prompts: List[str] = []
@@ -318,11 +318,11 @@ def main():
     C. 对 safety 结果跑 harmfulness 分类器
     D. 保存总表、分数据集/分攻击方法明细与汇总
     """
-    parser = argparse.ArgumentParser(description='运行 TuberLens baseline 评估。')
+    parser = argparse.ArgumentParser(description='运行 probe baseline 评估。')
     parser.add_argument(
         '--config',
         type=str,
-        default='scripts/baselines/tuberlens/evaluation_config.yaml',
+        default='scripts/baselines/probe/evaluation_config.yaml',
         help='配置文件路径（相对项目根目录）。',
     )
     args = parser.parse_args()
@@ -342,7 +342,7 @@ def main():
     run_utility = config.get('run_utility_evaluation', True)
     run_safety = config.get('run_safety_evaluation', True)
 
-    probe = train_tuberlens_probe(config)
+    probe = train_probe_probe(config)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     llm_config = config['llm_config']
@@ -375,10 +375,10 @@ def main():
                 sub = df_u[df_u['utility_dataset_name'] == dataset_name].reset_index(drop=True)
                 prompts = sub['prompt'].tolist()
                 local_gen_cfg = build_generation_config(gen_config, get_override_max_new_tokens(sub))
-                out, trig = run_tuberlens_generation(model, tokenizer, prompts, local_gen_cfg, batch_size, probe, refusal_message)
+                out, trig = run_probe_generation(model, tokenizer, prompts, local_gen_cfg, batch_size, probe, refusal_message)
                 sub['assistant_output'] = out
                 sub['trigger_step'] = trig
-                sub['condition'] = 'tuberlens'
+                sub['condition'] = 'probe'
                 sub['eval_split'] = 'utility'
                 all_results.append(sub)
 
@@ -391,10 +391,10 @@ def main():
                 sub = df_s[df_s['attack_method'] == method].reset_index(drop=True)
                 prompts = sub['prompt'].tolist()
                 local_gen_cfg = build_generation_config(gen_config, get_override_max_new_tokens(sub))
-                out, trig = run_tuberlens_generation(model, tokenizer, prompts, local_gen_cfg, batch_size, probe, refusal_message)
+                out, trig = run_probe_generation(model, tokenizer, prompts, local_gen_cfg, batch_size, probe, refusal_message)
                 sub['assistant_output'] = out
                 sub['trigger_step'] = trig
-                sub['condition'] = 'tuberlens'
+                sub['condition'] = 'probe'
                 sub['eval_split'] = 'safety'
                 all_results.append(sub)
 
@@ -436,7 +436,7 @@ def main():
             torch.cuda.empty_cache()
 
     # 详细结果总表
-    all_csv = output_dir / f"{llm_name}_tuberlens_evaluation_all_results.csv"
+    all_csv = output_dir / f"{llm_name}_probe_evaluation_all_results.csv"
     final_df.to_csv(all_csv, index=False, encoding='utf-8-sig')
     logger.info(f"已保存详细结果: {all_csv}")
 
@@ -452,16 +452,16 @@ def main():
         else:
             metrics = calculate_metrics(sub.assign(label='no'), condition='guarded')
 
-        detail_path = output_dir / f"{llm_name}_tuberlens_evaluation_detailed_utility_{dataset_name}.csv"
+        detail_path = output_dir / f"{llm_name}_probe_evaluation_detailed_utility_{dataset_name}.csv"
         sub.to_csv(detail_path, index=False, encoding='utf-8-sig')
 
-        summary = {f'utility_fpr_{dataset_name}': {'tuberlens': metrics}}
-        summary_path = output_dir / f"{llm_name}_tuberlens_evaluation_summary_utility_{dataset_name}.json"
+        summary = {f'utility_fpr_{dataset_name}': {'probe': metrics}}
+        summary_path = output_dir / f"{llm_name}_probe_evaluation_summary_utility_{dataset_name}.json"
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
         logger.info(
             f"可用性 (FPR) for {dataset_name} - "
-            f"TuberLens: {metrics['rate']:.4f}, "
+            f"probe: {metrics['rate']:.4f}, "
             f"TriggerRate: {metrics.get('trigger_rate', 0.0):.4f}"
         )
 
@@ -469,13 +469,13 @@ def main():
             # 复用主脚本生态：导出 Alpaca Eval 标准格式
             save_alpaca_format(
                 sub,
-                output_dir / f"{llm_name}-alpaca_eval-tuberlens.json",
-                f"{llm_name}-tuberlens",
+                output_dir / f"{llm_name}-alpaca_eval-probe.json",
+                f"{llm_name}-probe",
             )
 
         if 'xstest' in str(dataset_name).lower():
             # 复用主脚本生态：导出 xstest 标准格式
-            save_xstest_format(sub, output_dir / f"{llm_name}_xstest_tuberlens.csv")
+            save_xstest_format(sub, output_dir / f"{llm_name}_xstest_probe.csv")
 
     # Safety: 每种攻击输出 CSV + summary JSON
     safety_df = final_df[final_df['eval_split'] == 'safety']
@@ -485,20 +485,20 @@ def main():
         sub = safety_df[safety_df['attack_method'] == method].copy()
         metrics = calculate_metrics(sub, condition='guarded')
 
-        detail_path = output_dir / f"{llm_name}_tuberlens_evaluation_detailed_attack_{method}.csv"
+        detail_path = output_dir / f"{llm_name}_probe_evaluation_detailed_attack_{method}.csv"
         sub.to_csv(detail_path, index=False, encoding='utf-8-sig')
 
-        summary = {f'safety_asr_attack_{method}': {'tuberlens': metrics}}
-        summary_path = output_dir / f"{llm_name}_tuberlens_evaluation_summary_attack_{method}.json"
+        summary = {f'safety_asr_attack_{method}': {'probe': metrics}}
+        summary_path = output_dir / f"{llm_name}_probe_evaluation_summary_attack_{method}.json"
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
         logger.info(
             f"安全性 (ASR) for {method} - "
-            f"TuberLens: {metrics['rate']:.4f}, "
+            f"probe: {metrics['rate']:.4f}, "
             f"TriggerRate: {metrics.get('trigger_rate', 0.0):.4f}"
         )
 
-    logger.info('TuberLens baseline 评估完成。')
+    logger.info('probe baseline 评估完成。')
 
 
 if __name__ == '__main__':
