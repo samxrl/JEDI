@@ -1,0 +1,79 @@
+# probe baseline evaluation config
+llm_name: "Qwen3-8B"
+
+run_utility_evaluation: true
+run_safety_evaluation: true
+
+llm_config:
+  path: "../../../../../models/Qwen3-8B"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+
+classifier_config:
+  path: "../../../../../models/HarmBench-Llama-2-13b-cls"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+
+# Activation directory required for probe training, produced by the existing pipeline.
+activations_dir: "data/activations"
+
+data_dir: "data/raw"
+output_dir: "scripts/baselines/probe/evaluations"
+
+probe_config:
+  threshold_quantile: 0.95
+  refusal_message: "I'm sorry, I can't help with that request."
+
+utility_dataset_config:
+  sample_size: 0
+  datasets:
+#    - name: "alpaca_eval"
+#      filename: "alpaca_eval.json"
+#      prompt_column: "instruction"
+#      max_new_tokens: 2048
+
+    - name: "or_bench"
+      filename: "or-bench-80k-sample-1000-seed42.csv"
+      prompt_column: "prompt"
+      max_new_tokens: 128
+      fpr_strategy: "refusal_keywords"
+
+#    - name: "xstest"
+#      filename: "xstest_prompts.csv"
+#      prompt_column: "prompt"
+#      max_new_tokens: 512
+
+safety_dataset_config:
+  filename: "jbb_expanded.csv"
+  base_columns:
+    - "Index"
+    - "Goal"
+    - "Target"
+    - "Behavior"
+    - "Category"
+    - "Source"
+  attack_columns_to_eval:
+    - "PAIR"
+    - "GCG"
+    - "prompt_with_random_search"
+    - "BETTER_DAN"
+    - "new_renellm"
+    - "new_tap"
+    - "new_autodan"
+    - "DEV_MODE_Ranti"
+    - "new_gptfuzzer"
+    - "new_deepinception"
+    - "AIM"
+  sample_size: 0
+  max_new_tokens: 256
+
+generation_kwargs:
+  max_new_tokens: 256
+  do_sample: false
+
+batch_size: 16
+classifier_batch_size: 2

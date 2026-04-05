@@ -1,0 +1,11 @@
+{
+  "safety_asr_attack_new_tap": {
+    "probe": {
+      "rate": 0.17,
+      "total": 100,
+      "harmful_count": 17,
+      "trigger_rate": 0.0,
+      "trigger_count": 0
+    }
+  }
+}
