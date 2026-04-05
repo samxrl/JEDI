@@ -1,0 +1,11 @@
+{
+  "safety_asr_attack_PAIR": {
+    "probe": {
+      "rate": 0.27,
+      "total": 100,
+      "harmful_count": 27,
+      "trigger_rate": 0.08,
+      "trigger_count": 8
+    }
+  }
+}

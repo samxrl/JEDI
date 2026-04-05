@@ -1,0 +1,11 @@
+{
+  "safety_asr_attack_new_gptfuzzer": {
+    "probe": {
+      "rate": 0.02,
+      "total": 100,
+      "harmful_count": 2,
+      "trigger_rate": 0.92,
+      "trigger_count": 92
+    }
+  }
+}

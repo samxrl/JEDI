@@ -1,0 +1,7 @@
+{
+  "model_name": "Qwen3-8B",
+  "layer_id": 1,
+  "threshold": 0.0014434217023450726,
+  "feature_source": "train_early_window_first_token__online_prompt_last_token",
+  "artifact_path": "/seu_nvme/home/libixin/230248988/LLM_Jailbreak_Defense/JEDI/scripts/baselines/probe/data/Qwen3-8B/probe.pt"
+}
