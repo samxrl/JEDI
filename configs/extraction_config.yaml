@@ -39,7 +39,7 @@ extraction:
   # 选项：
   #   "mean": 对窗口中所有 token 的隐藏状态取平均值。
   #   "last": 仅使用窗口中最后一个 token 的隐藏状态。
-  aggregation: "mean"
+  aggregation: "last"
 
   # 当 aggregation 为 "mean" 时，只使用窗口的前 k 个 token 计算平均值。
   # 这对于内容窗口特别有用，可以只关注生成的起始部分。
