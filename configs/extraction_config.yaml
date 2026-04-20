@@ -39,7 +39,7 @@ extraction:
   # Options:
   #   "mean": Average hidden states of all tokens in the window.
   #   "last": Use only the last token's hidden state in the window.
-  aggregation: "mean"
+  aggregation: "last"
 
   # When aggregation is "mean", only use the first k tokens in the window for the average.
   # This is useful for content windows when you want to focus on the beginning of the generation.
