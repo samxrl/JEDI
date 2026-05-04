@@ -27,3 +27,6 @@ scripts/adaptive_evaluation.py
 configs/adaptive_evaluation_config.yaml
 
 scripts/ablation.py
+
+scripts/baselines/
+scripts/05_evaluate_condition_vector_separability.py
