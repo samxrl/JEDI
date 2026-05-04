@@ -31,4 +31,4 @@ scripts/05_evaluate_condition_vector_separability.py
 data/activations/condition_vector_separability_summary*.csv
 data/activations/*/condition_vector_projection_scores*.csv
 
-scripts/baselines
+scripts/baselines/*
