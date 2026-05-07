@@ -1,0 +1,18 @@
+{
+  "utility_fpr_or_bench": {
+    "baseline": {
+      "rate": 0.095,
+      "total": 1000,
+      "false_positive_count": 95,
+      "harmful_count": 95
+    },
+    "guarded": {
+      "rate": 0.119,
+      "total": 1000,
+      "false_positive_count": 119,
+      "harmful_count": 119,
+      "trigger_rate": 0.292,
+      "trigger_count": 292
+    }
+  }
+}

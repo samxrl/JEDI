@@ -15,7 +15,6 @@ data/activations/*
 data/ablation/*
 data/evaluations/plot Guarded Trigger Steps Boxplot.py
 
-data/evaluations/Qwen3-8B
 
 # Artifacts
 artifacts/*
