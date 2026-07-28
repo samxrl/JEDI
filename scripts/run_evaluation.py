@@ -25,6 +25,8 @@
 2.  根据配置项条件性地加载数据集和执行评测。
 
 **  修改：在测试 utility 数据集时，添加了耗时统计。 **
+
+**  新增：支持 --target-llm 覆盖 llm_name 与 llm_config.path 末级目录。 **
 """
 
 import argparse
@@ -647,10 +649,51 @@ def build_generation_config(base_config: GenerationConfig, max_new_tokens_overri
     return GenerationConfig(**config_dict)
 
 
+def replace_model_path_tail(model_path: Any, target_llm: str) -> str:
+    """以目标 LLM 名称替换模型路径的最后一级目录。"""
+    name = str(target_llm).strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise ValueError("--target-llm 必须是单个有效的 LLM 名称。")
+    path = str(model_path).rstrip("/\\")
+    separator_index = max(path.rfind("/"), path.rfind("\\"))
+    if separator_index < 0:
+        return name
+    return path[:separator_index + 1] + name
+
+
+def apply_target_llm_override(
+    config: Dict[str, Any],
+    target_llm: Optional[str],
+) -> Dict[str, Any]:
+    """覆盖评估配置中的模型名及 ``llm_config.path`` 末级目录。"""
+    if target_llm is None:
+        return config
+    if not isinstance(config.get("llm_config"), dict):
+        raise KeyError("配置缺少 llm_config 映射，无法应用 --target-llm。")
+    if not config["llm_config"].get("path"):
+        raise KeyError("配置缺少 llm_config.path，无法应用 --target-llm。")
+    name = str(target_llm).strip()
+    config["llm_name"] = name
+    config["llm_config"]["path"] = replace_model_path_tail(
+        config["llm_config"]["path"],
+        name,
+    )
+    return config
+
+
 def main():
     parser = argparse.ArgumentParser(description="运行 JEDI 防御评估 (支持 jbb_expanded.csv 和 alpaca_eval.json)。")
     parser.add_argument('--config', type=str, default='configs/evaluation_config.yaml',
                         help='评估配置文件路径。')
+    parser.add_argument(
+        '--target-llm',
+        type=str,
+        default=None,
+        help=(
+            '目标 LLM 名称；覆盖配置中的 llm_name，并替换 '
+            'llm_config.path 最后一个路径分隔符后的模型名称。'
+        ),
+    )
     args = parser.parse_args()
 
     # --- 1. 加载配置 ---
@@ -661,6 +704,13 @@ def main():
 
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    config = apply_target_llm_override(config, args.target_llm)
+    if args.target_llm is not None:
+        logger.info(
+            "命令行目标 LLM 覆盖生效: llm_name=%s, llm_config.path=%s",
+            config["llm_name"],
+            config["llm_config"]["path"],
+        )
 
     # --- [新增] 加载流程控制标志 ---
     run_utility = config.get('run_utility_evaluation', True)

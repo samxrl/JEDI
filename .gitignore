@@ -31,3 +31,21 @@ data/activations/condition_vector_separability_summary*.csv
 data/activations/*/condition_vector_projection_scores*.csv
 
 scripts/baselines/
+!scripts/baselines/
+scripts/baselines/*
+!scripts/baselines/SelfDefend/
+!scripts/baselines/SelfDefend/**
+!scripts/baselines/Qwen3Guard/
+!scripts/baselines/Qwen3Guard/**
+AGENTS.md
+方法流程.md
+/data/evaluations/trajguard
+/data/trajguard
+/data/evaluations/summary_all_models
+scripts/summarize_evaluation_metrics.py
+/outputs
+/scripts/baselines/SelfDefend
+/scripts/baselines/Qwen3Guard
+/scripts/metrics/tests
+configs/qwen3guard_stream_metrics.yaml
+/scripts/metrics

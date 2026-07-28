@@ -4,8 +4,9 @@
 # 用于评估 JEDI 防御系统在“安全性”和“可用性”方面的表现。
 #
 
-# 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配
-# 这用于在 `artifact_path` 中定位正确的防御产物子目录
+# 必须与 04_calibrate_defense.py 中使用的 `llm_name` 匹配。
+# 可用 --target-llm <名称> 临时覆盖；该参数还会替换 llm_config.path 的末级目录名。
+# 这用于在 `artifact_path` 中定位正确的防御产物子目录。
 llm_name: "vicuna_7b_v1_5"
 #llm_name: "mistral_7b_v2"
 #llm_name: "Qwen2_5-7B-Instruct"
