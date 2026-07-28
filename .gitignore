@@ -28,6 +28,7 @@ configs/adaptive_evaluation_config.yaml
 scripts/ablation.py
 
 scripts/baselines/*
+!scripts/baselines/README.md
 !scripts/baselines/CAST/
 !scripts/baselines/Qwen3Guard/
 !scripts/baselines/trajguard/
