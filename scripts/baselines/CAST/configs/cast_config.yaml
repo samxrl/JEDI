@@ -1,0 +1,174 @@
+# Single-model CAST reproduction configuration for JEDI's evaluation design.
+# Artifacts for each model are saved directly to output_root/<model.name>/ to prevent cross-model reuse.
+
+# Common parent directory for all model directories; it must be inside the CAST directory.
+# The actual model directory is output_root/<model.name>/.
+output_root: "scripts/baselines/CAST/runs"
+
+# Seed used for all random sampling.
+seed: 42
+
+model:
+  # name, path, and harmful_calibration_file jointly bind all CAST artifacts to the current model.
+  # Extraction and calibration must be rerun after changing the model, version, or chat template.
+  # Command-line --llm-name overrides name and only replaces the final path component of path;
+  # other model-related settings such as harmful_calibration_file and kwargs are not rewritten automatically.
+  name: "vicuna_7b_v1_5"
+  path: "../../../models/vicuna_7b_v1_5"
+  harmful_calibration_file: "data/raw/vicuna_7b_v1_5_sampled_jailbreaks.json"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+    low_cpu_mem_usage: true
+
+data:
+  # benign_file uses the JustEval regular subset and excludes AlpacaEval sources.
+  benign_file: "data/raw/justeval.jsonl"
+  benign_prompt_field: "instruction"
+  benign_allowed_category: "regular"
+  benign_excluded_source_substrings: ["alpaca_eval"]
+
+  # Positive examples in prefix_file are refusals and negative examples are compliance; the first 100 of each are used by default.
+  prefix_file: "data/raw/behavior_refusal.json"
+  refusal_key: "non_compliant_responses"
+  compliance_key: "compliant_responses"
+  prefix_limit: 100
+
+  # Each of the three prompt-level splits contains equal numbers of harmful and benign examples.
+  split_sizes:
+    vector_train: 60
+    condition_calibration: 20
+    steering_validation: 20
+
+  # Explicitly remove evaluation overlaps from the candidate pool and write an audit list; final splits still require strictly zero overlap.
+  drop_evaluation_overlaps: true
+  fail_on_evaluation_overlap: true
+  evaluation_sets:
+    - name: "jailbreak_safety"
+      path: "data/raw/jbb_expanded.csv"
+      text_fields:
+        - "PAIR"
+        - "GCG"
+        - "prompt_with_random_search"
+        - "BETTER_DAN"
+        - "new_renellm"
+        - "new_tap"
+        - "new_autodan"
+        - "DEV_MODE_Ranti"
+        - "new_gptfuzzer"
+        - "new_deepinception"
+        - "AIM"
+    - name: "alpaca_eval"
+      path: "data/raw/alpaca_eval.json"
+      text_fields: ["instruction"]
+    - name: "or_bench"
+      path: "data/raw/or-bench-80k-sample-1000-seed42.csv"
+      text_fields: ["prompt"]
+    - name: "xstest"
+      path: "data/raw/xstest_prompts.csv"
+      text_fields: ["prompt"]
+
+extraction:
+  # The pinned official version from 2025-08 recommends pca_pairwise.
+  # batch_size=1 avoids both padding contamination of the mean and suffix-span ambiguity.
+  method: "pca_pairwise"
+  batch_size: 1
+  hidden_layer_ids: null
+  behavior_aggregation: "suffix-only"
+  condition_aggregation: "all"
+
+calibration:
+  # Candidate layers are [layer_start, ceil(layer_end_fraction * L)).
+  # Scan both official larger/smaller names at every layer, optimizing validation F1.
+  layer_start: 1
+  layer_end_fraction: 0.4
+  layer_end_exclusive: null
+  threshold_range: [0.0, 0.1]
+  threshold_step: 0.0001
+  comparison_mode: "mean"
+  # null uses tokenizer.model_max_length, matching truncation behavior in JEDI's main evaluation.
+  max_prompt_length: null
+
+runtime:
+  # When behavior_layers is not specified, use [floor(0.47L), ceil(0.72L)).
+  # This gives layers 15--23 for a 32-layer model; strength=1.5 matches the official tutorial.
+  behavior_layers: null
+  behavior_start_fraction: 0.47
+  behavior_end_fraction: 0.72
+  behavior_strength: 1.5
+  apply_behavior_on_first_call: true
+  use_ooi_preventive_normalization: false
+  enforce_model_binding: true
+
+evaluation:
+  # The evaluation runs only the CAST condition; separate scripts produce undefended/JEDI results.
+  run_utility: true
+  run_safety: true
+  order: ["utility", "safety"]
+  data_dir: "data/raw"
+  device: "cuda"
+
+  # The official LeashLayer uses class-level request state and only processes batch row 0, so this must be 1.
+  batch_size: 1
+  checkpoint_interval: 10
+  fail_on_generation_error: true
+
+  # Global generation settings; each dataset can override max_new_tokens.
+  generation_kwargs:
+    max_new_tokens: 256
+    do_sample: false
+    num_beams: 1
+
+  utility_dataset_config:
+    # All entries are benign; refusal keywords provide a reproducible over-refusal FPR.
+    sample_size: 0
+    datasets:
+      - name: "alpaca_eval"
+        filename: "alpaca_eval.json"
+        prompt_column: "instruction"
+        max_new_tokens: 2048
+        fpr_strategy: "refusal_keywords"
+      - name: "or_bench"
+        filename: "or-bench-80k-sample-1000-seed42.csv"
+        prompt_column: "prompt"
+        max_new_tokens: 512
+        fpr_strategy: "refusal_keywords"
+      - name: "xstest"
+        filename: "xstest_prompts.csv"
+        prompt_column: "prompt"
+        max_new_tokens: 512
+        fpr_strategy: "refusal_keywords"
+
+  safety_dataset_config:
+    filename: "jbb_expanded.csv"
+    base_columns:
+      - "Index"
+      - "Goal"
+      - "Target"
+      - "Behavior"
+      - "Category"
+      - "Source"
+    attack_columns_to_eval:
+      - "PAIR"
+      - "GCG"
+      - "prompt_with_random_search"
+      - "BETTER_DAN"
+      - "new_renellm"
+      - "new_tap"
+      - "new_autodan"
+      - "DEV_MODE_Ranti"
+      - "new_gptfuzzer"
+      - "new_deepinception"
+      - "AIM"
+    sample_size: 0
+    max_new_tokens: 256
+
+  # Load HarmBench after unloading the target model so two large models do not occupy GPU memory simultaneously.
+  classifier_config:
+    path: "../../../models/HarmBench-Llama-2-13b-cls"
+    kwargs:
+      torch_dtype: "bfloat16"
+      trust_remote_code: true
+      device_map: "auto"
+  classifier_batch_size: 1

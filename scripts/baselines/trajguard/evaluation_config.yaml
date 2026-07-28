@@ -1,0 +1,96 @@
+# Evaluate TrajGuard using JEDI's unified data and HarmBench metric protocol.
+
+# Complete one model before adding others one by one; each must have its own offline artifacts.
+llm_models:
+  - name: "vicuna_7b_v1_5"
+    path: "../../../models/vicuna_7b_v1_5"
+    kwargs:
+      torch_dtype: "bfloat16"
+      trust_remote_code: true
+      device_map: "auto"
+
+# Utility and safety evaluation can be disabled separately; utility runs before safety by default.
+run_utility_evaluation: true
+run_safety_evaluation: true
+evaluation_order: ["utility", "safety"]
+
+trajguard:
+  # {llm_name} is replaced by name from llm_models; artifacts remain inside this baseline directory.
+  artifact_dir: "scripts/baselines/trajguard/artifacts/{llm_name}"
+  use_pair_judge: true
+  unsafe_action: "replace"
+  refusal_text: "I'm sorry, but I can't help with that."
+  fail_on_monitor_error: true
+  enforce_chat_template_hash: true
+  judge:
+    # Compare log probabilities of the Yes/No candidate sequences using the same target model.
+    unsafe_labels: [" Yes"]
+    safe_labels: [" No"]
+    fail_closed: true
+    max_length: 2048
+
+# Data and output paths are relative to the project root.
+data_dir: "data/raw"
+# Write evaluation details, summaries, and checkpoints only to TrajGuard's own directory.
+output_dir: "scripts/baselines/trajguard/evaluations"
+
+utility_dataset_config:
+  # 0 means use all examples from each dataset.
+  sample_size: 0
+  datasets:
+    - name: "alpaca_eval"
+      filename: "alpaca_eval.json"
+      prompt_column: "instruction"
+      max_new_tokens: 2048
+    - name: "or_bench"
+      filename: "or-bench-80k-sample-1000-seed42.csv"
+      prompt_column: "prompt"
+      max_new_tokens: 512
+      fpr_strategy: "refusal_keywords"
+    - name: "xstest"
+      filename: "xstest_prompts.csv"
+      prompt_column: "prompt"
+      max_new_tokens: 512
+
+safety_dataset_config:
+  # Share attack tables and base columns exactly with JEDI's main evaluation.
+  filename: "jbb_expanded.csv"
+  base_columns:
+    - "Index"
+    - "Goal"
+    - "Target"
+    - "Behavior"
+    - "Category"
+    - "Source"
+  attack_columns_to_eval:
+    - "PAIR"
+    - "GCG"
+    - "prompt_with_random_search"
+    - "BETTER_DAN"
+    - "new_renellm"
+    - "new_tap"
+    - "new_autodan"
+    - "DEV_MODE_Ranti"
+    - "new_gptfuzzer"
+    - "new_deepinception"
+    - "AIM"
+  sample_size: 0
+  max_new_tokens: 256
+
+generation_kwargs:
+  # The online implementation supports only batch_size=1, greedy decoding, and a single beam.
+  max_new_tokens: 256
+  do_sample: false
+  num_beams: 1
+
+classifier_config:
+  # Load the classifier only after unloading the target model to avoid simultaneous GPU-memory use.
+  path: "../../../models/HarmBench-Llama-2-13b-cls"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+
+# Save a checkpoint for every example; adjust classifier batch size to available GPU memory.
+checkpoint_interval: 10
+classifier_batch_size: 1

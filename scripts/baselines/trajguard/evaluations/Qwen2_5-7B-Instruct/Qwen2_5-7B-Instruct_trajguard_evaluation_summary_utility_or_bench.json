@@ -1,0 +1,49 @@
+{
+  "utility_fpr_or_bench": {
+    "trajguard": {
+      "rate": 0.149,
+      "total": 1000,
+      "false_positive_count": 149,
+      "harmful_count": 149,
+      "trigger_rate": 0.686,
+      "trigger_count": 686,
+      "trajguard_diagnostics": {
+        "total": 1000,
+        "judge_call_sequence_rate": 0.686,
+        "mean_judge_calls_per_sequence": 1.665,
+        "unsafe_stop_rate": 0.056,
+        "first_trigger_step": {
+          "median": 301.0,
+          "p95": 490.75
+        },
+        "unsafe_trigger_step": {
+          "median": 272.5,
+          "p95": 468.0
+        },
+        "exposed_tokens_among_unsafe_stops": {
+          "median": 0.0,
+          "p95": 0.0
+        },
+        "zero_prefix_exposure_rate_among_unsafe_stops": 1.0,
+        "ttft_ms": {
+          "median": 16.316993162035942,
+          "p95": 16.53376971371472
+        },
+        "generation_runtime_ms": {
+          "median": 7918.362217955291,
+          "p95": 8122.0129621215165
+        },
+        "defense_runtime_ms": {
+          "median": 832.5252393260598,
+          "p95": 1018.6156146228313
+        },
+        "judge_runtime_ms": {
+          "median": 51.66015215218067,
+          "p95": 233.29383046366274
+        },
+        "mean_defense_ms_per_scored_step": 1.70629955545854,
+        "mean_scored_steps": 483.737
+      }
+    }
+  }
+}

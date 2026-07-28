@@ -1,0 +1,106 @@
+# Periodic Qwen3Guard-Gen-16/32: cumulative-prefix offline replay configuration for JEDI's undefended responses.
+
+baseline:
+  # name/condition_prefix are updated automatically from guard.model_name; adaptation_label makes clear this is not a real streaming interface.
+  name: "periodic_qwen3guard_gen"
+  condition_prefix: "qwen3guard_gen"
+  adaptation_label: "our streaming replay adaptation"
+  seed: 42
+
+paths:
+  # source_evaluation_dir is read-only; input_root/run_root are partitioned automatically by target LLM/guard model.
+  # Repeated runs with the same target and guard settings stably reuse the same path; manual run IDs are no longer accepted.
+  source_evaluation_dir: "data/evaluations"
+  input_root: "./inputs"
+  run_root: "./runs"
+
+source:
+  # Replay only JEDI's saved undefended outputs; max_samples_per_file=0 means all samples.
+  # attack_methods is the allowlist of JEDI main-experiment attack files and excludes adaptive artifacts such as adaptive_gcg.
+  # With require_baseline_rows=true, any selected main-experiment file missing baseline rows raises an error.
+  condition: "baseline"
+  include_safety: true
+  include_utility: true
+  require_baseline_rows: true
+  max_samples_per_file: 0
+  attack_methods:
+    - "AIM"
+    - "BETTER_DAN"
+    - "DEV_MODE_Ranti"
+    - "GCG"
+    - "new_autodan"
+    - "new_deepinception"
+    - "new_gptfuzzer"
+    - "new_renellm"
+    - "new_tap"
+    - "PAIR"
+    - "prompt_with_random_search"
+
+models:
+  # Keep exactly one target-model template; --target-llm overrides both name and the final directory of tokenizer_path.
+  # tokenizer_path is resolved from the JEDI repository root and loads only the tokenizer, not target-LLM weights.
+  - name: "vicuna_7b_v1_5"
+    tokenizer_path: "../../../models/vicuna_7b_v1_5"
+    tokenizer_revision:
+    trust_remote_code: true
+    local_files_only: true
+
+streaming:
+  # The shared 16-token grid can derive both 16/32 result sets losslessly; the final remainder must be checked before release.
+  # Each classification includes the original user prompt and full cumulative assistant prefix; on trigger, only the current unreleased chunk and subsequent content are discarded.
+  base_checkpoint_stride: 16
+  chunk_sizes: [16, 32]
+  prefix_mode: "cumulative"
+  include_user_prompt: true
+  check_final_partial: true
+  buffer_policy: "hold_current_chunk"
+  trigger_policy: "block_current_and_remaining"
+  refusal_text: "I'm sorry, but I can't assist with that request."
+
+guard:
+  # model_name may be Qwen3Guard-Gen-8B or Qwen3Guard-Stream-8B.
+  # The program uses it to switch the backend, model_id, final model_path directory, context limit, and condition automatically.
+  # Gen uses generated three-line labels; Stream uses the official stream_moderate_from_ids state interface.
+  # Controversial is blocked like Unsafe by default; unknown results are retried once and then handled fail-closed.
+  model_name: "Qwen3Guard-Gen-8B"
+  model_path: "../../../models/Qwen3Guard-Gen-8B"
+  dtype: "bfloat16"
+  device_map: "auto"
+  device: "cuda"
+  trust_remote_code: true
+  local_files_only: true
+  max_input_tokens: "auto"
+  max_new_tokens: 128
+  retry_max_new_tokens: 192
+  do_sample: false
+  controversial_policy: "block"
+  unknown_policy: "retry_then_fail_closed"
+  backend_error_policy: "fail_closed"
+
+execution:
+  # batch_size controls classification batching within a checkpoint round; Stream forces it to 1 automatically.
+  # batch_size affects only throughput and timing records, not score-semantic identity or materialize matching.
+  # show_progress displays one progress bar covering all checkpoints; resumed runs continue from the completed count.
+  # store_raw_guard_outputs controls whether per-call logs retain raw outputs.
+  batch_size: 4
+  show_progress: true
+  store_raw_guard_outputs: true
+
+judgment:
+  # Unchanged responses may reuse existing HarmBench labels; changed safety responses are reclassified with JEDI's template.
+  # model_path is a read-only weight path resolved from the JEDI repository root.
+  reuse_unchanged_labels: true
+  model_path: "../../../models/HarmBench-Llama-2-13b-cls"
+  dtype: "bfloat16"
+  device_map: "auto"
+  device: "cuda"
+  trust_remote_code: true
+  local_files_only: true
+  batch_size: 1
+
+evaluation:
+  # External AlpacaEval/XSTest evaluators do not run in this script; it only exports compatible inputs and aggregates existing labels.
+  allow_unjudged_safety: false
+  export_alpaca_eval: true
+  export_xstest: true
+  export_or_bench: true

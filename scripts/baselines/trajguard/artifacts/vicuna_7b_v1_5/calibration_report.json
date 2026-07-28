@@ -1,0 +1,13 @@
+{
+  "threshold": 89.06628708772098,
+  "threshold_quantile": 0.995,
+  "num_validation_prompts": 1000,
+  "num_streaming_scores": 50762,
+  "token_level_exceedance_rate": 0.0050037429573302865,
+  "sequence_level_trigger_rate": 0.037,
+  "triggered_sequences": 37,
+  "median_score": 69.68657916587117,
+  "max_score": 98.57048018846892,
+  "median_trigger_step": 43.0,
+  "minimum_judge_call_rate": 0.037
+}

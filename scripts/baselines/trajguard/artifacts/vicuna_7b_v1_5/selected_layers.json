@@ -1,0 +1,270 @@
+{
+  "selected_layers": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    10,
+    11
+  ],
+  "diagnostics": {
+    "0": {
+      "mvd": 0.0,
+      "auroc": 0.9833586372048817,
+      "fisher_ratio": 0.5230355262756348,
+      "benign_risk_mean": -1.7672102451324463,
+      "malicious_risk_mean": 3.143211603164673,
+      "malicious_radius": 9.483968734741211
+    },
+    "1": {
+      "mvd": 0.0,
+      "auroc": 0.985189044367747,
+      "fisher_ratio": 0.7907955050468445,
+      "benign_risk_mean": -2.803584098815918,
+      "malicious_risk_mean": 4.030712127685547,
+      "malicious_radius": 9.555631637573242
+    },
+    "2": {
+      "mvd": 0.0,
+      "auroc": 0.9874974864945978,
+      "fisher_ratio": 1.5991300344467163,
+      "benign_risk_mean": -4.355900287628174,
+      "malicious_risk_mean": 3.5442566871643066,
+      "malicious_radius": 9.816434860229492
+    },
+    "3": {
+      "mvd": 0.0,
+      "auroc": 0.9914462472488996,
+      "fisher_ratio": 2.006258726119995,
+      "benign_risk_mean": -4.508511543273926,
+      "malicious_risk_mean": 4.899024486541748,
+      "malicious_radius": 9.740814208984375
+    },
+    "4": {
+      "mvd": 0.0,
+      "auroc": 0.9944286151960783,
+      "fisher_ratio": 2.977386236190796,
+      "benign_risk_mean": -6.5157341957092285,
+      "malicious_risk_mean": 4.3415350914001465,
+      "malicious_radius": 9.53781509399414
+    },
+    "5": {
+      "mvd": 0.0,
+      "auroc": 0.9971408938575431,
+      "fisher_ratio": 3.9283580780029297,
+      "benign_risk_mean": -6.493660926818848,
+      "malicious_risk_mean": 5.616696357727051,
+      "malicious_radius": 9.442161560058594
+    },
+    "6": {
+      "mvd": 0.3,
+      "auroc": 0.9971678546418568,
+      "fisher_ratio": 5.349164962768555,
+      "benign_risk_mean": -7.743626117706299,
+      "malicious_risk_mean": 5.5911688804626465,
+      "malicious_radius": 9.566049575805664
+    },
+    "7": {
+      "mvd": 0.75,
+      "auroc": 0.9978740246098439,
+      "fisher_ratio": 6.514942169189453,
+      "benign_risk_mean": -8.265620231628418,
+      "malicious_risk_mean": 5.955562114715576,
+      "malicious_radius": 9.492273330688477
+    },
+    "8": {
+      "mvd": 0.15,
+      "auroc": 0.9980326880752299,
+      "fisher_ratio": 6.179783821105957,
+      "benign_risk_mean": -8.460736274719238,
+      "malicious_risk_mean": 6.242657661437988,
+      "malicious_radius": 9.540125846862793
+    },
+    "9": {
+      "mvd": 0.9,
+      "auroc": 0.9978521283513406,
+      "fisher_ratio": 6.3831467628479,
+      "benign_risk_mean": -9.221853256225586,
+      "malicious_risk_mean": 7.4926862716674805,
+      "malicious_radius": 9.693668365478516
+    },
+    "10": {
+      "mvd": 0.0,
+      "auroc": 0.998501988295318,
+      "fisher_ratio": 7.18057918548584,
+      "benign_risk_mean": -9.340445518493652,
+      "malicious_risk_mean": 8.484294891357422,
+      "malicious_radius": 9.546882629394531
+    },
+    "11": {
+      "mvd": 0.0,
+      "auroc": 0.9986066176470588,
+      "fisher_ratio": 7.535533905029297,
+      "benign_risk_mean": -9.809464454650879,
+      "malicious_risk_mean": 9.653688430786133,
+      "malicious_radius": 9.64782428741455
+    },
+    "12": {
+      "mvd": 0.0,
+      "auroc": 0.9986002025810324,
+      "fisher_ratio": 7.217887878417969,
+      "benign_risk_mean": -10.757811546325684,
+      "malicious_risk_mean": 11.337777137756348,
+      "malicious_radius": 9.685064315795898
+    },
+    "13": {
+      "mvd": 0.0,
+      "auroc": 0.9986918267306922,
+      "fisher_ratio": 6.7668538093566895,
+      "benign_risk_mean": -11.381595611572266,
+      "malicious_risk_mean": 13.56713581085205,
+      "malicious_radius": 9.662246704101562
+    },
+    "14": {
+      "mvd": 0.6,
+      "auroc": 0.9987334058623449,
+      "fisher_ratio": 6.3240556716918945,
+      "benign_risk_mean": -12.845730781555176,
+      "malicious_risk_mean": 14.376443862915039,
+      "malicious_radius": 9.74332046508789
+    },
+    "15": {
+      "mvd": 0.0,
+      "auroc": 0.9988314638355341,
+      "fisher_ratio": 6.686685085296631,
+      "benign_risk_mean": -13.299769401550293,
+      "malicious_risk_mean": 14.197000503540039,
+      "malicious_radius": 9.847482681274414
+    },
+    "16": {
+      "mvd": 0.225,
+      "auroc": 0.9989439275710285,
+      "fisher_ratio": 8.050069808959961,
+      "benign_risk_mean": -13.864501953125,
+      "malicious_risk_mean": 12.893948554992676,
+      "malicious_radius": 9.974099159240723
+    },
+    "17": {
+      "mvd": 0.0,
+      "auroc": 0.9988835659263705,
+      "fisher_ratio": 8.268309593200684,
+      "benign_risk_mean": -14.921172142028809,
+      "malicious_risk_mean": 12.409743309020996,
+      "malicious_radius": 10.027633666992188
+    },
+    "18": {
+      "mvd": 0.0,
+      "auroc": 0.9988736994797919,
+      "fisher_ratio": 8.360528945922852,
+      "benign_risk_mean": -15.477692604064941,
+      "malicious_risk_mean": 11.582740783691406,
+      "malicious_radius": 10.094823837280273
+    },
+    "19": {
+      "mvd": 0.0,
+      "auroc": 0.9988886179471789,
+      "fisher_ratio": 8.43520736694336,
+      "benign_risk_mean": -15.315564155578613,
+      "malicious_risk_mean": 11.918611526489258,
+      "malicious_radius": 10.10658073425293
+    },
+    "20": {
+      "mvd": 0.0,
+      "auroc": 0.9988512279911965,
+      "fisher_ratio": 8.105606079101562,
+      "benign_risk_mean": -15.338908195495605,
+      "malicious_risk_mean": 11.264524459838867,
+      "malicious_radius": 9.949893951416016
+    },
+    "21": {
+      "mvd": 0.0,
+      "auroc": 0.998749087134854,
+      "fisher_ratio": 8.079740524291992,
+      "benign_risk_mean": -14.79435920715332,
+      "malicious_risk_mean": 10.731939315795898,
+      "malicious_radius": 9.853483200073242
+    },
+    "22": {
+      "mvd": 2.7,
+      "auroc": 0.9986624024609844,
+      "fisher_ratio": 7.646914005279541,
+      "benign_risk_mean": -14.826420783996582,
+      "malicious_risk_mean": 10.308626174926758,
+      "malicious_radius": 9.773788452148438
+    },
+    "23": {
+      "mvd": 1.875,
+      "auroc": 0.9986144957983193,
+      "fisher_ratio": 7.405058860778809,
+      "benign_risk_mean": -14.763343811035156,
+      "malicious_risk_mean": 10.290471076965332,
+      "malicious_radius": 9.781190872192383
+    },
+    "24": {
+      "mvd": 3.0,
+      "auroc": 0.9985733418367346,
+      "fisher_ratio": 7.2443461418151855,
+      "benign_risk_mean": -14.347803115844727,
+      "malicious_risk_mean": 10.027810096740723,
+      "malicious_radius": 9.707409858703613
+    },
+    "25": {
+      "mvd": 0.375,
+      "auroc": 0.9985844462785114,
+      "fisher_ratio": 7.21560525894165,
+      "benign_risk_mean": -14.424005508422852,
+      "malicious_risk_mean": 10.123108863830566,
+      "malicious_radius": 9.722860336303711
+    },
+    "26": {
+      "mvd": 0.975,
+      "auroc": 0.9986042667066827,
+      "fisher_ratio": 7.14268159866333,
+      "benign_risk_mean": -14.553059577941895,
+      "malicious_risk_mean": 9.967809677124023,
+      "malicious_radius": 9.73047161102295
+    },
+    "27": {
+      "mvd": 1.8,
+      "auroc": 0.9985896858743496,
+      "fisher_ratio": 7.113903522491455,
+      "benign_risk_mean": -14.869037628173828,
+      "malicious_risk_mean": 9.658294677734375,
+      "malicious_radius": 9.764470100402832
+    },
+    "28": {
+      "mvd": 3.0,
+      "auroc": 0.998591661664666,
+      "fisher_ratio": 7.118359565734863,
+      "benign_risk_mean": -14.866767883300781,
+      "malicious_risk_mean": 9.594101905822754,
+      "malicious_radius": 9.761068344116211
+    },
+    "29": {
+      "mvd": 0.0,
+      "auroc": 0.9986041166466586,
+      "fisher_ratio": 7.023810386657715,
+      "benign_risk_mean": -14.774044036865234,
+      "malicious_risk_mean": 9.270962715148926,
+      "malicious_radius": 9.784818649291992
+    },
+    "30": {
+      "mvd": 0.0,
+      "auroc": 0.9986571128451381,
+      "fisher_ratio": 7.226686477661133,
+      "benign_risk_mean": -14.760785102844238,
+      "malicious_risk_mean": 8.911942481994629,
+      "malicious_radius": 9.798604011535645
+    },
+    "31": {
+      "mvd": 0.0,
+      "auroc": 0.9985200830332134,
+      "fisher_ratio": 7.058708190917969,
+      "benign_risk_mean": -13.374693870544434,
+      "malicious_risk_mean": 7.484025001525879,
+      "malicious_radius": 9.819342613220215
+    }
+  }
+}

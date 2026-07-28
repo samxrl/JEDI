@@ -27,5 +27,14 @@ configs/adaptive_evaluation_config.yaml
 
 scripts/ablation.py
 
-scripts/baselines/
+scripts/baselines/*
+!scripts/baselines/CAST/
+!scripts/baselines/Qwen3Guard/
+!scripts/baselines/trajguard/
 scripts/05_evaluate_condition_vector_separability.py
+/outputs
+configs/qwen3guard_stream_metrics.yaml
+方法流程.md
+scripts/summarize_evaluation_metrics.py
+/scripts/metrics
+AGENTS.md

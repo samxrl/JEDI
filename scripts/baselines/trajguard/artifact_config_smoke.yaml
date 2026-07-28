@@ -1,0 +1,112 @@
+# Low-cost integration configuration using data already in the repository.
+# This configuration checks the code path and must not be used as a TrajGuard result in the paper's main table.
+
+seed: 42
+
+model:
+  # Run quick integration on Vicuna-7B-v1.5 by default.
+  name: "vicuna_7b_v1_5"
+  path: "../../../models/vicuna_7b_v1_5"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+    low_cpu_mem_usage: true
+
+datasets:
+  # Use JustEval only to fit the benign reference region.
+  benign_reference:
+    paths: ["data/raw/justeval.jsonl"]
+    text_fields: ["instruction"]
+    max_samples: 800
+    shuffle: true
+    seed: 42
+
+  # Use adaptive GCG prompts only to fit the malicious reference region; do not reuse formal evaluation rows.
+  malicious_reference:
+    paths: ["data/raw/vicuna_7b_v1_5_adaptive_prompts.csv"]
+    text_fields: ["adaptive_gcg"]
+    max_samples: 100
+    shuffle: true
+    seed: 42
+
+  # Select layers using the fixed sampled jailbreak prompts in the repository.
+  layer_selection:
+    paths: ["data/raw/vicuna_7b_v1_5_sampled_jailbreaks.json"]
+    text_fields: ["prompt"]
+    max_samples: 100
+    shuffle: true
+    seed: 42
+
+  # Use the OR-Bench subset only for integration threshold calibration; exclude it from this smoke configuration's utility evaluation.
+  benign_validation:
+    paths: ["data/raw/or-bench-80k-sample-1000-seed42.csv"]
+    text_fields: ["prompt"]
+    max_samples: 50
+    shuffle: true
+    seed: 42
+
+  # Evaluation hashes and the four construction sets must be strictly disjoint.
+  evaluation_sets:
+    - paths: ["data/raw/jbb_expanded.csv"]
+      text_fields:
+        - "PAIR"
+        - "GCG"
+        - "prompt_with_random_search"
+        - "BETTER_DAN"
+        - "new_renellm"
+        - "new_tap"
+        - "new_autodan"
+        - "DEV_MODE_Ranti"
+        - "new_gptfuzzer"
+        - "new_deepinception"
+        - "AIM"
+      max_samples: 0
+      shuffle: false
+    - paths: ["data/raw/xstest_prompts.csv"]
+      text_fields: ["prompt"]
+      max_samples: 0
+      shuffle: false
+  strict_internal_disjoint: true
+
+extraction:
+  # Preserve method parameters while reducing only the sample scale.
+  context_tokens: 3
+  pca_dim: 64
+  batch_size: 4
+  partial_fit_rows: 128
+  max_length: 1024
+
+layer_selection:
+  # Preserve the paper's eight-layer selection and MVD search settings.
+  top_k: 8
+  malicious_radius_quantile: 0.90
+  mvd_trials: 20
+  mvd_search_steps: 20
+  mvd_r_max: 3.0
+  seed: 42
+
+streaming:
+  # Preserve the paper's online SGS settings.
+  window_size: 8
+  trim_count: 1
+  ewma_lambda: 0.8
+  sustain_steps: 3
+
+calibration:
+  # Shorten only the benign calibration generation length.
+  enabled: true
+  threshold_quantile: 0.995
+  max_new_tokens: 64
+  max_prompt_length: 2048
+
+quality_gate:
+  # Record low separation without blocking during smoke tests; the formal configuration blocks it.
+  min_selected_mean_auroc: 0.55
+  fail_on_low_separation: false
+
+output:
+  # Isolate from formal artifacts to prevent accidental overwrites.
+  # Smoke artifacts also must not be written to JEDI's shared data directory.
+  artifact_dir: "scripts/baselines/trajguard/artifacts_smoke/{llm_name}"
+  cache_projected_activations: false

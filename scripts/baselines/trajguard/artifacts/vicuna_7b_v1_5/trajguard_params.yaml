@@ -1,0 +1,27 @@
+method: trajguard_paper_consistent
+model:
+  name: vicuna_7b_v1_5
+  path: ../../../models/vicuna_7b_v1_5
+  config_name_or_path: R:\models\vicuna_7b_v1_5
+  num_layers: 32
+  hidden_size: 4096
+  chat_template_sha256: 57e4b134d7119cb46f0681fbc657a95e5b5867be7481e3deb52ee6752b6548d4
+  layer_index_semantics: decoder_block_0_based; offline_hidden_states_index=layer_id+1
+parameters:
+  context_tokens: 3
+  pca_dim: 64
+  window_size: 8
+  trim_count: 1
+  ewma_lambda: 0.8
+  sustain_steps: 3
+  threshold_quantile: 0.995
+  threshold: 89.06628708772098
+selected_layers:
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 10
+- 11

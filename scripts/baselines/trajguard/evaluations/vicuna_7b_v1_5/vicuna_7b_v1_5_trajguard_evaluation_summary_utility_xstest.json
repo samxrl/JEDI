@@ -1,0 +1,48 @@
+{
+  "utility_fpr_xstest": {
+    "trajguard": {
+      "rate": 0.0,
+      "total": 450,
+      "harmful_count": 0,
+      "trigger_rate": 0.19777777777777777,
+      "trigger_count": 89,
+      "trajguard_diagnostics": {
+        "total": 450,
+        "judge_call_sequence_rate": 0.19777777777777777,
+        "mean_judge_calls_per_sequence": 0.21777777777777776,
+        "unsafe_stop_rate": 0.1111111111111111,
+        "first_trigger_step": {
+          "median": 108.0,
+          "p95": 353.0
+        },
+        "unsafe_trigger_step": {
+          "median": 157.5,
+          "p95": 390.1499999999999
+        },
+        "exposed_tokens_among_unsafe_stops": {
+          "median": 0.0,
+          "p95": 0.0
+        },
+        "zero_prefix_exposure_rate_among_unsafe_stops": 1.0,
+        "ttft_ms": {
+          "median": 16.171100083738565,
+          "p95": 16.35104799643159
+        },
+        "generation_runtime_ms": {
+          "median": 1574.1044669412076,
+          "p95": 5024.654906475915
+        },
+        "defense_runtime_ms": {
+          "median": 156.11762879416347,
+          "p95": 484.2568616848437
+        },
+        "judge_runtime_ms": {
+          "median": 0.0,
+          "p95": 43.43699826858937
+        },
+        "mean_defense_ms_per_scored_step": 1.4436737632612686,
+        "mean_scored_steps": 140.9711111111111
+      }
+    }
+  }
+}

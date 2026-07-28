@@ -1,0 +1,123 @@
+seed: 42
+model:
+  name: vicuna_7b_v1_5
+  path: ../../../models/vicuna_7b_v1_5
+  kwargs:
+    torch_dtype: bfloat16
+    trust_remote_code: true
+    device_map: auto
+    low_cpu_mem_usage: true
+datasets:
+  benign_reference:
+    paths:
+    - scripts/baselines/trajguard/official/Trajguard/data/benign/benign_10000.json
+    text_fields:
+    - query
+    - prompt
+    - instruction
+    - text
+    max_samples: 8000
+    shuffle: true
+    seed: 42
+  malicious_reference:
+    paths:
+    - scripts/baselines/trajguard/official/Trajguard/data/malicious/*.json
+    text_fields:
+    - query
+    - prompt
+    - instruction
+    - text
+    - goal
+    max_samples: 10000
+    shuffle: true
+    seed: 42
+  layer_selection:
+    paths:
+    - scripts/baselines/trajguard/official/Trajguard/data/jailbreak/*.json
+    text_fields:
+    - query
+    - prompt
+    - instruction
+    - text
+    - jailbreak_prompt
+    max_samples: 0
+    shuffle: true
+    seed: 42
+  benign_validation:
+    paths:
+    - scripts/baselines/trajguard/official/Trajguard/data/benign/benign_val.json
+    text_fields:
+    - query
+    - prompt
+    - instruction
+    - text
+    max_samples: 0
+    shuffle: true
+    seed: 42
+  evaluation_sets:
+  - paths:
+    - data/raw/jbb_expanded.csv
+    text_fields:
+    - PAIR
+    - GCG
+    - prompt_with_random_search
+    - BETTER_DAN
+    - new_renellm
+    - new_tap
+    - new_autodan
+    - DEV_MODE_Ranti
+    - new_gptfuzzer
+    - new_deepinception
+    - AIM
+    max_samples: 0
+    shuffle: false
+  - paths:
+    - data/raw/alpaca_eval.json
+    text_fields:
+    - instruction
+    max_samples: 0
+    shuffle: false
+  - paths:
+    - data/raw/or-bench-80k-sample-1000-seed42.csv
+    text_fields:
+    - prompt
+    max_samples: 0
+    shuffle: false
+  - paths:
+    - data/raw/xstest_prompts.csv
+    text_fields:
+    - prompt
+    max_samples: 0
+    shuffle: false
+  strict_internal_disjoint: true
+  drop_evaluation_overlaps: true
+  max_evaluation_overlap_fraction: 0.02
+extraction:
+  context_tokens: 3
+  pca_dim: 64
+  batch_size: 4
+  partial_fit_rows: 256
+  max_length: 1024
+layer_selection:
+  top_k: 8
+  malicious_radius_quantile: 0.9
+  mvd_trials: 20
+  mvd_search_steps: 20
+  mvd_r_max: 3.0
+  seed: 42
+streaming:
+  window_size: 8
+  trim_count: 1
+  ewma_lambda: 0.8
+  sustain_steps: 3
+calibration:
+  enabled: true
+  threshold_quantile: 0.995
+  max_new_tokens: 64
+  max_prompt_length: 2048
+quality_gate:
+  min_selected_mean_auroc: 0.55
+  fail_on_low_separation: true
+output:
+  artifact_dir: scripts/baselines/trajguard/artifacts/{llm_name}
+  cache_projected_activations: false

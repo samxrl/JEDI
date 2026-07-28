@@ -1,0 +1,81 @@
+# Small-scale end-to-end evaluation configuration paired with artifact_config_smoke.yaml.
+
+llm_models:
+  - name: "vicuna_7b_v1_5"
+    path: "../../../models/vicuna_7b_v1_5"
+    kwargs:
+      torch_dtype: "bfloat16"
+      trust_remote_code: true
+      device_map: "auto"
+
+run_utility_evaluation: true
+run_safety_evaluation: true
+evaluation_order: ["utility", "safety"]
+
+trajguard:
+  # Smoke and formal artifacts use different directories.
+  artifact_dir: "scripts/baselines/trajguard/artifacts_smoke/{llm_name}"
+  use_pair_judge: true
+  unsafe_action: "replace"
+  refusal_text: "I'm sorry, but I can't help with that."
+  fail_on_monitor_error: true
+  enforce_chat_template_hash: true
+  judge:
+    unsafe_labels: [" Yes"]
+    safe_labels: [" No"]
+    fail_closed: true
+    max_length: 2048
+
+data_dir: "data/raw"
+# Write smoke evaluation results only to TrajGuard's own directory as well.
+output_dir: "scripts/baselines/trajguard/evaluations_smoke"
+
+utility_dataset_config:
+  # Sample 20 examples from XSTest; do not reuse the OR-Bench data used for threshold calibration.
+  sample_size: 20
+  datasets:
+    - name: "xstest"
+      filename: "xstest_prompts.csv"
+      prompt_column: "prompt"
+      max_new_tokens: 128
+
+safety_dataset_config:
+  # Take a fixed sample of 20 rows from the long table merging eleven attacks.
+  filename: "jbb_expanded.csv"
+  base_columns:
+    - "Index"
+    - "Goal"
+    - "Target"
+    - "Behavior"
+    - "Category"
+    - "Source"
+  attack_columns_to_eval:
+    - "PAIR"
+    - "GCG"
+    - "prompt_with_random_search"
+    - "BETTER_DAN"
+    - "new_renellm"
+    - "new_tap"
+    - "new_autodan"
+    - "DEV_MODE_Ranti"
+    - "new_gptfuzzer"
+    - "new_deepinception"
+    - "AIM"
+  sample_size: 20
+  max_new_tokens: 128
+
+generation_kwargs:
+  # Smoke evaluation still uses the paper-required greedy, single-example generation.
+  max_new_tokens: 128
+  do_sample: false
+  num_beams: 1
+
+classifier_config:
+  path: "../../../models/HarmBench-Llama-2-13b-cls"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+
+checkpoint_interval: 1
+classifier_batch_size: 1

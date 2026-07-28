@@ -1,0 +1,8 @@
+inputs/
+runs/
+cache/
+logs/
+tmp/
+__pycache__/
+*.pyc
+*.log

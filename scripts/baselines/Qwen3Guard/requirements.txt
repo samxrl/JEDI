@@ -1,0 +1,6 @@
+torch
+transformers>=4.55,<5
+accelerate
+pandas
+PyYAML
+tqdm

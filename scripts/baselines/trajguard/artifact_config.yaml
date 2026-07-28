@@ -1,0 +1,128 @@
+# Formal TrajGuard offline-artifact configuration.
+# Data paths point to the official repository; see README.md in this directory for preparation.
+
+seed: 42
+
+model:
+  # PCA, regions, layer selection, and thresholds must be built separately for every target model.
+  name: "vicuna_7b_v1_5"
+  path: "../../../models/vicuna_7b_v1_5"
+  kwargs:
+    torch_dtype: "bfloat16"
+    trust_remote_code: true
+    device_map: "auto"
+    low_cpu_mem_usage: true
+
+datasets:
+  # The formal configuration uses the benign reference set released by TrajGuard.
+  benign_reference:
+    paths:
+      - "scripts/baselines/trajguard/official/Trajguard/data/benign/benign_10000.json"
+    text_fields: ["query", "prompt", "instruction", "text"]
+    max_samples: 8000
+    shuffle: true
+    seed: 42
+
+  # Merge the malicious reference set from official safety-category files, retaining at most 10,000 examples.
+  malicious_reference:
+    paths:
+      - "scripts/baselines/trajguard/official/Trajguard/data/malicious/*.json"
+    text_fields: ["query", "prompt", "instruction", "text", "goal"]
+    max_samples: 10000
+    shuffle: true
+    seed: 42
+
+  # Layer selection uses only an independent jailbreak set and does not reuse reference or test sets.
+  layer_selection:
+    paths:
+      - "scripts/baselines/trajguard/official/Trajguard/data/jailbreak/*.json"
+    text_fields: ["query", "prompt", "instruction", "text", "jailbreak_prompt"]
+    max_samples: 0
+    shuffle: true
+    seed: 42
+
+  # Calibrate the threshold with real per-token streaming scores from an independent benign validation set.
+  benign_validation:
+    paths:
+      - "scripts/baselines/trajguard/official/Trajguard/data/benign/benign_val.json"
+    text_fields: ["query", "prompt", "instruction", "text"]
+    max_samples: 0
+    shuffle: true
+    seed: 42
+
+  # Read only text and perform hash isolation here; no evaluation runs during artifact construction.
+  evaluation_sets:
+    - paths: ["data/raw/jbb_expanded.csv"]
+      text_fields:
+        - "PAIR"
+        - "GCG"
+        - "prompt_with_random_search"
+        - "BETTER_DAN"
+        - "new_renellm"
+        - "new_tap"
+        - "new_autodan"
+        - "DEV_MODE_Ranti"
+        - "new_gptfuzzer"
+        - "new_deepinception"
+        - "AIM"
+      max_samples: 0
+      shuffle: false
+    - paths: ["data/raw/alpaca_eval.json"]
+      text_fields: ["instruction"]
+      max_samples: 0
+      shuffle: false
+    - paths: ["data/raw/or-bench-80k-sample-1000-seed42.csv"]
+      text_fields: ["prompt"]
+      max_samples: 0
+      shuffle: false
+    - paths: ["data/raw/xstest_prompts.csv"]
+      text_fields: ["prompt"]
+      max_samples: 0
+      shuffle: false
+
+  # After automatic removal, every split must still pass strict pairwise-disjointness assertions.
+  strict_internal_disjoint: true
+  # If official data has a small exact overlap with JEDI tests, remove it first and write an audit list.
+  drop_evaluation_overlaps: true
+  max_evaluation_overlap_fraction: 0.02
+
+extraction:
+  # The paper/official implementation uses the final three valid tokens and per-layer 64-dimensional PCA.
+  context_tokens: 3
+  pca_dim: 64
+  batch_size: 4
+  partial_fit_rows: 256
+  max_length: 1024
+
+layer_selection:
+  # Select the eight decoder blocks with the smallest MVD.
+  top_k: 8
+  malicious_radius_quantile: 0.90
+  mvd_trials: 20
+  mvd_search_steps: 20
+  mvd_r_max: 3.0
+  seed: 42
+
+streaming:
+  # Apply windowed truncated mean, cross-layer mean, and EWMA in sequence.
+  window_size: 8
+  trim_count: 1
+  ewma_lambda: 0.8
+  sustain_steps: 3
+
+calibration:
+  # The formal threshold is the 99.5th percentile of benign streaming scores.
+  enabled: true
+  threshold_quantile: 0.995
+  max_new_tokens: 64
+  max_prompt_length: 2048
+
+quality_gate:
+  # This is a sanity check against complete direction reversal, not a paper metric.
+  min_selected_mean_auroc: 0.55
+  fail_on_low_separation: true
+
+output:
+  # Save all TrajGuard artifacts only inside this baseline directory; the directory name uses model.name automatically.
+  artifact_dir: "scripts/baselines/trajguard/artifacts/{llm_name}"
+  cache_projected_activations: false

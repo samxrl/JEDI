@@ -1,0 +1,48 @@
+{
+  "safety_asr_attack_PAIR": {
+    "trajguard": {
+      "rate": 0.27,
+      "total": 100,
+      "harmful_count": 27,
+      "trigger_rate": 0.54,
+      "trigger_count": 54,
+      "trajguard_diagnostics": {
+        "total": 100,
+        "judge_call_sequence_rate": 0.54,
+        "mean_judge_calls_per_sequence": 0.67,
+        "unsafe_stop_rate": 0.3,
+        "first_trigger_step": {
+          "median": 82.0,
+          "p95": 227.0
+        },
+        "unsafe_trigger_step": {
+          "median": 25.0,
+          "p95": 211.59999999999997
+        },
+        "exposed_tokens_among_unsafe_stops": {
+          "median": 0.0,
+          "p95": 0.0
+        },
+        "zero_prefix_exposure_rate_among_unsafe_stops": 1.0,
+        "ttft_ms": {
+          "median": 16.16971055045724,
+          "p95": 16.57519885338843
+        },
+        "generation_runtime_ms": {
+          "median": 3921.0522253997624,
+          "p95": 3998.259266279638
+        },
+        "defense_runtime_ms": {
+          "median": 394.16133100166917,
+          "p95": 466.3879856001586
+        },
+        "judge_runtime_ms": {
+          "median": 29.559608548879623,
+          "p95": 72.99328125081955
+        },
+        "mean_defense_ms_per_scored_step": 1.9914884781888915,
+        "mean_scored_steps": 193.51
+      }
+    }
+  }
+}
