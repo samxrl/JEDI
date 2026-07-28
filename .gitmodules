@@ -1,0 +1,3 @@
+[submodule "scripts/baselines/trajguard/official/Trajguard"]
+	path = scripts/baselines/trajguard/official/Trajguard
+	url = https://github.com/neuron-insight-lab/Trajguard.git

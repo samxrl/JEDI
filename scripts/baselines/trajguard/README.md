@@ -59,10 +59,11 @@ normalization.
 ## Prepare formal data
 
 The formal configuration reads only data from the official TrajGuard repository
-and does not depend on its runtime code:
+and does not depend on its runtime code. The official repository is pinned as a
+Git submodule; initialize it after cloning JEDI:
 
 ```powershell
-git clone --depth 1 https://github.com/neuron-insight-lab/Trajguard.git scripts/baselines/trajguard/official/Trajguard
+git submodule update --init scripts/baselines/trajguard/official/Trajguard
 ```
 
 First check only paths, fields, and prompt-hash isolation across all splits:
