@@ -1,5 +1,7 @@
 # JEDI
 
+**This work has been accepted to NeurIPS 2026.**
+
 JEDI (Jailbreak dEfense via Detection and Intervention) is a defense method that safeguards streaming LLMs against jailbreak attacks by leveraging representation engineering and CUSUM-based monitoring to preemptively detect and steer harmful generation trajectories into a safe subspace with negligible latency overhead.
 
 ![Overview](images/workflow.png "Overview")
