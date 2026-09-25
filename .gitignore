@@ -39,3 +39,6 @@ configs/qwen3guard_stream_metrics.yaml
 scripts/summarize_evaluation_metrics.py
 /scripts/metrics
 AGENTS.md
+/data/component_ablation
+scripts/run_component_ablation.py
+scripts/evaluate_heldout_prefix_bank_robustness.py
