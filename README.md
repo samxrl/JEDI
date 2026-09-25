@@ -201,3 +201,16 @@ data/activations/pca_visualization_content_window.png
 
 We would like to thank the [**HarmBench**](https://github.com/centerforaisafety/HarmBench) and [**PandaGuard**](https://github.com/Beijing-AISI/panda-guard/tree/main?tab=readme-ov-file) for providing jailbreak prompts and baseline implementations that significantly contributed to the evaluation of JEDI.
 
+## Citation
+
+If you find JEDI helpful in your research, we would appreciate a citation to our paper:
+
+```bibtex
+@inproceedings{xie_jedi,
+  title     = {{JEDI}: Real-Time Jailbreak Defense for {LLMs} via In-Generation Detection and Intervention},
+  author    = {Ruilin Xie and Bixin Li and Xinyu Chen and Yongqiang Tian and Lulu Wang},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year      = {2026},
+  note      = {Accepted for publication}
+}
+```
